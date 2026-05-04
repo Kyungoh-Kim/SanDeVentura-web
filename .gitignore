@@ -11,9 +11,9 @@ build/
 coverage/
 .next/
 .turbo/
+*.tsbuildinfo
 
 # Local env
 .env
 .env.*
 *.log
-
