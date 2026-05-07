@@ -21,6 +21,10 @@ create table if not exists public.hiking_sessions (
   unique (user_id, client_session_key)
 );
 
+insert into public.mountains (id, display_name, source)
+values ('beta-mountain', 'Beta Mountain', 'internal')
+on conflict (id) do nothing;
+
 create table if not exists public.track_points (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references public.hiking_sessions(id),
@@ -40,11 +44,26 @@ create table if not exists public.rejected_track_points (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references public.hiking_sessions(id),
   reason text not null,
+  recorded_at timestamptz,
+  lat double precision,
+  lon double precision,
+  altitude double precision,
+  accuracy double precision,
+  speed double precision,
   point_sequence_index integer,
   debug_payload_sample jsonb,
   debug_payload_expires_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+create index if not exists hiking_sessions_client_session_key_idx
+  on public.hiking_sessions(user_id, client_session_key);
+
+create index if not exists track_points_session_sequence_idx
+  on public.track_points(session_id, sequence_index);
+
+create index if not exists rejected_track_points_session_idx
+  on public.rejected_track_points(session_id);
 
 create table if not exists public.mvp_events (
   id uuid primary key default gen_random_uuid(),
@@ -55,4 +74,3 @@ create table if not exists public.mvp_events (
   event_payload jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
-
