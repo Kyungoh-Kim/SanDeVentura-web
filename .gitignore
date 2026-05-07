@@ -16,4 +16,16 @@ coverage/
 # Local env
 .env
 .env.*
+!.env.example
+!.env.*.example
 *.log
+
+# Local secrets
+.secrets/
+secrets/
+*.secret
+*.secrets
+*.key
+*.pem
+supabase/.branches/
+supabase/.temp/

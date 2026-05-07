@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:functions": "npx deno test --allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SPRINT2_DEV_USER_ID supabase/tests/functions",
+    "test:db": "npx supabase test db",
+    "supabase:reset": "npx supabase db reset",
+    "supabase:functions": "npx supabase functions serve upload-session --no-verify-jwt --env-file supabase/.env.local"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.0.0",
