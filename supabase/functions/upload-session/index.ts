@@ -7,6 +7,10 @@ import {
   validateUploadPoints,
 } from '../_shared/validation.ts';
 
+type SupabaseClientLike = {
+  from: (table: string) => any;
+};
+
 export async function handleUploadSession(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
     return jsonResponse({ success: false, errors: ['method_not_allowed'] }, 405);
@@ -212,7 +216,7 @@ if (import.meta.main) {
 }
 
 async function duplicateResponse(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClientLike,
   devUserId: string,
   idempotencyKey: string,
 ): Promise<Response | null> {
@@ -246,7 +250,7 @@ async function duplicateResponse(
 }
 
 async function cleanupIncompleteSession(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClientLike,
   sessionId: string,
 ): Promise<void> {
   await supabase.from('rejected_track_points').delete().eq('session_id', sessionId);

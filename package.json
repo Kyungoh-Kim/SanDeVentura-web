@@ -8,9 +8,9 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:functions": "deno test supabase/tests/functions",
-    "test:db": "supabase test db",
-    "supabase:reset": "supabase db reset"
+    "test:functions": "npx deno test --allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SPRINT2_DEV_USER_ID supabase/tests/functions",
+    "test:db": "npx supabase test db",
+    "supabase:reset": "npx supabase db reset"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.0.0",

@@ -136,8 +136,8 @@ Deno.test('validateUploadPoints rejects missing timestamp invalid lon and missin
   assertEquals(result.accepted.length, 0);
   assertEquals(result.rejected.map((point) => point.reason), [
     'missing_recorded_at',
-    'invalid_lon',
     'missing_sequence_index',
+    'invalid_lon',
   ]);
 });
 

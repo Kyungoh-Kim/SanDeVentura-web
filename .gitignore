@@ -17,3 +17,5 @@ coverage/
 .env
 .env.*
 *.log
+supabase/.branches/
+supabase/.temp/
