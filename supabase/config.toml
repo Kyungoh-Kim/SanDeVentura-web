@@ -18,3 +18,11 @@ port = 54323
 [functions.upload-session]
 verify_jwt = false
 
+[functions.get-canonical-trail]
+verify_jwt = false
+
+[functions.snap-position]
+verify_jwt = false
+
+[functions.recompute-canonical-trails]
+verify_jwt = false
