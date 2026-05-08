@@ -1,8 +1,13 @@
 -- =============================================================================
 -- 0009_schema_routes.sql
--- Add routes table; migrate canonical_trails, trail_cells, trail_cell_transitions
--- from mountain_id to route_id.  hiking_sessions gains a nullable route_id.
+-- Add bbox to mountains; add routes table; migrate canonical_trails,
+-- trail_cells, trail_cell_transitions from mountain_id to route_id.
+-- hiking_sessions gains a nullable route_id.
 -- =============================================================================
+
+-- ── 0. mountains bbox ────────────────────────────────────────────────────────
+
+alter table public.mountains add column if not exists bbox text;
 
 -- ── 1. routes table ──────────────────────────────────────────────────────────
 
