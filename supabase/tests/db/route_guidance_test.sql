@@ -1,6 +1,6 @@
 begin;
 
-select plan(16);
+select plan(18);
 
 select has_table('public', 'trail_cells', 'trail_cells table exists');
 select has_table('public', 'trail_cell_transitions', 'trail_cell_transitions table exists');
@@ -8,7 +8,86 @@ select has_table('public', 'canonical_trails', 'canonical_trails table exists');
 select has_function('public', 'latest_canonical_trail', array['text'], 'latest trail RPC exists');
 select has_function('public', 'snap_position_to_trail', array['text', 'double precision', 'double precision'], 'snap RPC exists');
 select has_function('public', 'accepted_route_points', array['text'], 'accepted route points RPC exists');
+select has_function('public', 'route_quality_inputs', array['text'], 'route quality input RPC exists');
 select has_view('public', 'operator_route_coverage', 'operator route coverage view exists');
+
+insert into public.mountains (id, display_name, source)
+values ('quality-test-mountain', 'Quality Test Mountain', 'test');
+
+insert into public.hiking_sessions (
+  id,
+  user_id,
+  mountain_id,
+  client_session_key,
+  started_at,
+  ended_at,
+  status,
+  upload_consent_version,
+  accepted_point_count,
+  rejected_point_count
+) values
+  (
+    '11111111-1111-1111-1111-111111111111',
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    'quality-test-mountain',
+    'route-quality-1',
+    '2026-05-08T01:00:00Z',
+    '2026-05-08T01:30:00Z',
+    'accepted',
+    'beta-route-upload-v1',
+    3,
+    1
+  ),
+  (
+    '22222222-2222-2222-2222-222222222222',
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    'quality-test-mountain',
+    'route-quality-2',
+    '2026-05-08T02:00:00Z',
+    '2026-05-08T02:30:00Z',
+    'accepted',
+    'beta-route-upload-v1',
+    2,
+    4
+  );
+
+insert into public.track_points (
+  session_id,
+  mountain_id,
+  recorded_at,
+  geom,
+  altitude,
+  accuracy,
+  quality_score,
+  sequence_index
+) values
+  (
+    '11111111-1111-1111-1111-111111111111',
+    'quality-test-mountain',
+    '2026-05-08T01:05:00Z',
+    'POINT(127.0000 37.5000)'::geography,
+    300,
+    10,
+    0.9,
+    0
+  ),
+  (
+    '22222222-2222-2222-2222-222222222222',
+    'quality-test-mountain',
+    '2026-05-08T02:00:00Z',
+    'POINT(127.0010 37.5010)'::geography,
+    302,
+    12,
+    0.88,
+    0
+  );
+
+select results_eq(
+  $$ select accepted_point_count, rejected_point_count, latest_evidence_at
+     from public.route_quality_inputs('quality-test-mountain') $$,
+  $$ values (5::integer, 5::integer, '2026-05-08T02:00:00Z'::timestamptz) $$,
+  'route quality input RPC returns evidence counts and latest timestamp'
+);
 
 select policies_are(
   'public',

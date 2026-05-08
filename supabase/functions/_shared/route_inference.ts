@@ -28,6 +28,13 @@ export type TrailTransition = {
   edgeCost: number;
 };
 
+export type RouteQualityInputs = {
+  acceptedPointCount?: number;
+  rejectedPointCount?: number;
+  latestEvidenceAt?: string | null;
+  now?: Date;
+};
+
 export type CanonicalRoute = {
   cells: TrailCell[];
   transitions: TrailTransition[];
@@ -37,16 +44,159 @@ export type CanonicalRoute = {
   sessionCount: number;
   branchAmbiguityScore: number;
   gpsQualityScore: number;
+  transitionConsistencyScore: number;
+  rejectedPointRate: number;
+  recencyScore: number;
+};
+
+type CellSupport = TrailCell & {
+  sessionIds: Set<string>;
+};
+
+type TransitionSupport = TrailTransition & {
+  sessionIds: Set<string>;
+};
+
+type Component = {
+  cells: CellSupport[];
+  transitions: TransitionSupport[];
+  sessionCount: number;
+  score: number;
 };
 
 const cellSizeDegrees = 0.00025;
+const minCellPointCount = 2;
+const minCellSessionCount = 1;
+const minTransitionCount = 1;
+const minTransitionSessionCount = 1;
+const recommendedConfidence = 0.70;
+const recommendedSessionCount = 3;
+const maxRecommendedBranchAmbiguity = 0.30;
+const maxRecommendedRejectedPointRate = 0.30;
+const minRecommendedGpsQuality = 0.70;
+const minRecommendedRecency = 0.50;
 
-export function inferCanonicalRoute(points: RoutePoint[]): CanonicalRoute {
+export function inferCanonicalRoute(
+  points: RoutePoint[],
+  inputs: RouteQualityInputs = {},
+): CanonicalRoute {
   if (points.length === 0) {
     return emptyRoute();
   }
 
   const sessions = groupBySession(points);
+  const rawCells = buildCells(sessions);
+  const rawTransitions = buildTransitions(sessions);
+  const supportedCells = new Map(
+    [...rawCells.values()]
+      .filter((cell) =>
+        cell.pointCount >= minCellPointCount &&
+        cell.sessionCount >= minCellSessionCount
+      )
+      .map((cell) => [cell.cellKey, cell]),
+  );
+  const supportedTransitions = [...rawTransitions.values()].filter((transition) =>
+    supportedCells.has(transition.fromCellKey) &&
+    supportedCells.has(transition.toCellKey) &&
+    transition.transitionCount >= minTransitionCount &&
+    transition.sessionCount >= minTransitionSessionCount
+  );
+
+  const cells = pruneIsolatedCells(supportedCells, supportedTransitions);
+  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
+  const transitions = supportedTransitions.filter((transition) =>
+    cellByKey.has(transition.fromCellKey) && cellByKey.has(transition.toCellKey)
+  );
+
+  const component = selectBestComponent(cells, transitions);
+  if (component === null) {
+    return routeFromScores({
+      cells,
+      transitions,
+      line: [],
+      confidence: 0,
+      confidenceLevel: 'none',
+      sessionCount: sessions.size,
+      branchAmbiguityScore: 0,
+      gpsQualityScore: scoreGpsQuality(cells),
+      transitionConsistencyScore: 0,
+      rejectedPointRate: rejectedPointRate(points.length, inputs),
+      recencyScore: recencyScore(latestEvidenceAt(points, inputs), inputs.now),
+    });
+  }
+
+  const selected = selectPath(component);
+  const line = selected.cellKeys
+    .map((cellKey) => cellByKey.get(cellKey))
+    .filter((cell): cell is CellSupport => cell !== undefined)
+    .map((cell) => ({ lat: cell.lat, lon: cell.lon }));
+
+  if (line.length < 2) {
+    return routeFromScores({
+      cells,
+      transitions,
+      line: [],
+      confidence: 0,
+      confidenceLevel: 'none',
+      sessionCount: sessions.size,
+      branchAmbiguityScore: 0,
+      gpsQualityScore: scoreGpsQuality(cells),
+      transitionConsistencyScore: 0,
+      rejectedPointRate: rejectedPointRate(points.length, inputs),
+      recencyScore: recencyScore(latestEvidenceAt(points, inputs), inputs.now),
+    });
+  }
+
+  const branchAmbiguityScore = branchAmbiguity(component.transitions);
+  const gpsQualityScore = scoreGpsQuality(component.cells);
+  const transitionConsistencyScore = transitionConsistency(
+    component.transitions,
+    selected.edgeKeys,
+  );
+  const rejectedRate = rejectedPointRate(points.length, inputs);
+  const recency = recencyScore(latestEvidenceAt(points, inputs), inputs.now);
+  const sessionSupportScore = Math.min(1, component.sessionCount / recommendedSessionCount);
+  const confidence = clamp(
+    sessionSupportScore * 0.35 +
+      gpsQualityScore * 0.20 +
+      transitionConsistencyScore * 0.15 +
+      (1 - branchAmbiguityScore) * 0.15 +
+      (1 - rejectedRate) * 0.10 +
+      recency * 0.05,
+  );
+
+  return routeFromScores({
+    cells: component.cells.map(publicCell),
+    transitions: component.transitions.map(publicTransition),
+    line,
+    confidence,
+    confidenceLevel: isRecommended({
+      confidence,
+      sessionCount: component.sessionCount,
+      branchAmbiguityScore,
+      gpsQualityScore,
+      rejectedPointRate: rejectedRate,
+      recencyScore: recency,
+    })
+      ? 'recommended'
+      : 'reference',
+    sessionCount: component.sessionCount,
+    branchAmbiguityScore,
+    gpsQualityScore,
+    transitionConsistencyScore,
+    rejectedPointRate: rejectedRate,
+    recencyScore: recency,
+  });
+}
+
+export function lineStringWkt(line: Array<{ lat: number; lon: number }>): string | null {
+  if (line.length < 2) {
+    return null;
+  }
+  return `LINESTRING(${line.map((point) => `${point.lon} ${point.lat}`).join(',')})`;
+}
+
+function buildCells(sessions: Map<string, RoutePoint[]>): Map<string, CellSupport> {
   const cellStats = new Map<string, {
     latSum: number;
     lonSum: number;
@@ -58,19 +208,9 @@ export function inferCanonicalRoute(points: RoutePoint[]): CanonicalRoute {
     altitudeCount: number;
     lastSeenAt: string;
   }>();
-  const transitionStats = new Map<string, {
-    fromCellKey: string;
-    toCellKey: string;
-    transitionCount: number;
-    sessions: Set<string>;
-  }>();
 
   for (const [sessionId, sessionPoints] of sessions) {
-    const ordered = [...sessionPoints].sort((left, right) =>
-      left.sequenceIndex - right.sequenceIndex
-    );
-    let previousCell: string | null = null;
-    for (const point of ordered) {
+    for (const point of sessionPoints) {
       const cellKey = pointToCellKey(point.lat, point.lon);
       const stats = cellStats.get(cellKey) ?? {
         latSum: 0,
@@ -99,7 +239,45 @@ export function inferCanonicalRoute(points: RoutePoint[]): CanonicalRoute {
         stats.lastSeenAt = point.recordedAt;
       }
       cellStats.set(cellKey, stats);
+    }
+  }
 
+  return new Map([...cellStats.entries()].map(([cellKey, stats]) => {
+    const avgAccuracy = stats.accuracyCount === 0
+      ? null
+      : stats.accuracySum / stats.accuracyCount;
+    return [cellKey, {
+      cellKey,
+      lat: stats.latSum / stats.pointCount,
+      lon: stats.lonSum / stats.pointCount,
+      pointCount: stats.pointCount,
+      sessionCount: stats.sessions.size,
+      avgAccuracy,
+      avgAltitude: stats.altitudeCount === 0
+        ? null
+        : stats.altitudeSum / stats.altitudeCount,
+      lastSeenAt: stats.lastSeenAt,
+      qualityScore: qualityScore(avgAccuracy),
+      sessionIds: stats.sessions,
+    }];
+  }));
+}
+
+function buildTransitions(sessions: Map<string, RoutePoint[]>): Map<string, TransitionSupport> {
+  const transitionStats = new Map<string, {
+    fromCellKey: string;
+    toCellKey: string;
+    transitionCount: number;
+    sessions: Set<string>;
+  }>();
+
+  for (const [sessionId, sessionPoints] of sessions) {
+    const ordered = [...sessionPoints].sort((left, right) =>
+      left.sequenceIndex - right.sequenceIndex
+    );
+    let previousCell: string | null = null;
+    for (const point of ordered) {
+      const cellKey = pointToCellKey(point.lat, point.lon);
       if (previousCell !== null && previousCell !== cellKey) {
         const transitionKey = `${previousCell}->${cellKey}`;
         const transition = transitionStats.get(transitionKey) ?? {
@@ -116,65 +294,17 @@ export function inferCanonicalRoute(points: RoutePoint[]): CanonicalRoute {
     }
   }
 
-  const cells = [...cellStats.entries()].map(([cellKey, stats]) => {
-    const avgAccuracy = stats.accuracyCount === 0
-      ? null
-      : stats.accuracySum / stats.accuracyCount;
-    return {
-      cellKey,
-      lat: stats.latSum / stats.pointCount,
-      lon: stats.lonSum / stats.pointCount,
-      pointCount: stats.pointCount,
-      sessionCount: stats.sessions.size,
-      avgAccuracy,
-      avgAltitude: stats.altitudeCount === 0
-        ? null
-        : stats.altitudeSum / stats.altitudeCount,
-      lastSeenAt: stats.lastSeenAt,
-      qualityScore: qualityScore(avgAccuracy),
-    };
-  });
-
-  const transitions = [...transitionStats.values()].map((transition) => ({
-    fromCellKey: transition.fromCellKey,
-    toCellKey: transition.toCellKey,
-    transitionCount: transition.transitionCount,
-    sessionCount: transition.sessions.size,
-    edgeCost: 1 / Math.max(1, transition.transitionCount),
-  }));
-
-  const sessionCount = sessions.size;
-  const line = strongestLine(cells, transitions);
-  const branchAmbiguityScore = branchAmbiguity(transitions);
-  const gpsQualityScore = cells.length === 0
-    ? 0
-    : average(cells.map((cell) => cell.qualityScore));
-  const supportScore = Math.min(1, sessionCount / 3);
-  const lengthScore = Math.min(1, line.length / 5);
-  const confidence = clamp(
-    supportScore * 0.45 +
-      gpsQualityScore * 0.35 +
-      (1 - branchAmbiguityScore) * 0.15 +
-      lengthScore * 0.05,
-  );
-
-  return {
-    cells,
-    transitions,
-    line,
-    confidence,
-    confidenceLevel: confidence >= 0.70 ? 'recommended' : 'reference',
-    sessionCount,
-    branchAmbiguityScore,
-    gpsQualityScore,
-  };
-}
-
-export function lineStringWkt(line: Array<{ lat: number; lon: number }>): string | null {
-  if (line.length < 2) {
-    return null;
-  }
-  return `LINESTRING(${line.map((point) => `${point.lon} ${point.lat}`).join(',')})`;
+  return new Map([...transitionStats.entries()].map(([key, transition]) => [
+    key,
+    {
+      fromCellKey: transition.fromCellKey,
+      toCellKey: transition.toCellKey,
+      transitionCount: transition.transitionCount,
+      sessionCount: transition.sessions.size,
+      edgeCost: 1 / Math.max(1, transition.transitionCount),
+      sessionIds: transition.sessions,
+    },
+  ]));
 }
 
 function groupBySession(points: RoutePoint[]): Map<string, RoutePoint[]> {
@@ -191,66 +321,234 @@ function pointToCellKey(lat: number, lon: number): string {
   return `${Math.round(lat / cellSizeDegrees)}:${Math.round(lon / cellSizeDegrees)}`;
 }
 
-function strongestLine(cells: TrailCell[], transitions: TrailTransition[]): Array<{ lat: number; lon: number }> {
-  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
-  if (transitions.length === 0) {
-    return cells
-      .sort((left, right) => right.pointCount - left.pointCount)
-      .slice(0, 1)
-      .map((cell) => ({ lat: cell.lat, lon: cell.lon }));
+function pruneIsolatedCells(
+  cells: Map<string, CellSupport>,
+  transitions: TransitionSupport[],
+): CellSupport[] {
+  if (transitions.length < 2) {
+    return [...cells.values()];
   }
 
-  const outgoing = new Map<string, TrailTransition[]>();
-  const incoming = new Set<string>();
+  const usedCellKeys = new Set<string>();
   for (const transition of transitions) {
-    const list = outgoing.get(transition.fromCellKey) ?? [];
-    list.push(transition);
-    outgoing.set(transition.fromCellKey, list);
-    incoming.add(transition.toCellKey);
+    usedCellKeys.add(transition.fromCellKey);
+    usedCellKeys.add(transition.toCellKey);
   }
-
-  const starts = [...outgoing.keys()].filter((cellKey) => !incoming.has(cellKey));
-  const start = (starts[0] ?? [...outgoing.keys()][0]) as string;
-  const visited = new Set<string>();
-  const line: Array<{ lat: number; lon: number }> = [];
-  let current: string | undefined = start;
-
-  while (current !== undefined && !visited.has(current)) {
-    visited.add(current);
-    const cell = cellByKey.get(current);
-    if (cell) {
-      line.push({ lat: cell.lat, lon: cell.lon });
-    }
-    const next: TrailTransition | undefined = (outgoing.get(current) ?? [])
-      .sort((left, right) =>
-        right.sessionCount - left.sessionCount ||
-        right.transitionCount - left.transitionCount
-      )[0];
-    current = next?.toCellKey;
-  }
-
-  if (current !== undefined) {
-    const cell = cellByKey.get(current);
-    if (cell) {
-      line.push({ lat: cell.lat, lon: cell.lon });
-    }
-  }
-  return line;
+  return [...cells.values()].filter((cell) => usedCellKeys.has(cell.cellKey));
 }
 
-function branchAmbiguity(transitions: TrailTransition[]): number {
-  const outgoing = new Map<string, TrailTransition[]>();
+function selectBestComponent(
+  cells: CellSupport[],
+  transitions: TransitionSupport[],
+): Component | null {
+  if (transitions.length === 0) {
+    return null;
+  }
+
+  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
+  const adjacency = new Map<string, Set<string>>();
+  for (const transition of transitions) {
+    addAdjacent(adjacency, transition.fromCellKey, transition.toCellKey);
+    addAdjacent(adjacency, transition.toCellKey, transition.fromCellKey);
+  }
+
+  const visited = new Set<string>();
+  const components: Component[] = [];
+  for (const cellKey of adjacency.keys()) {
+    if (visited.has(cellKey)) {
+      continue;
+    }
+
+    const queue = [cellKey];
+    const componentCellKeys = new Set<string>();
+    visited.add(cellKey);
+    while (queue.length > 0) {
+      const current = queue.shift() as string;
+      componentCellKeys.add(current);
+      for (const next of adjacency.get(current) ?? []) {
+        if (!visited.has(next)) {
+          visited.add(next);
+          queue.push(next);
+        }
+      }
+    }
+
+    const componentCells = [...componentCellKeys]
+      .map((key) => cellByKey.get(key))
+      .filter((cell): cell is CellSupport => cell !== undefined);
+    const componentTransitions = transitions.filter((transition) =>
+      componentCellKeys.has(transition.fromCellKey) &&
+      componentCellKeys.has(transition.toCellKey)
+    );
+    const sessions = new Set<string>();
+    for (const cell of componentCells) {
+      for (const sessionId of cell.sessionIds) {
+        sessions.add(sessionId);
+      }
+    }
+
+    components.push({
+      cells: componentCells,
+      transitions: componentTransitions,
+      sessionCount: sessions.size,
+      score:
+        sum(componentTransitions.map((transition) => transition.sessionCount)) +
+        sum(componentCells.map((cell) => cell.pointCount)) * 0.25 +
+        sessions.size * 0.5,
+    });
+  }
+
+  return components.sort((left, right) =>
+    right.score - left.score ||
+    right.sessionCount - left.sessionCount ||
+    right.cells.length - left.cells.length ||
+    firstCellKey(left).localeCompare(firstCellKey(right))
+  )[0] ?? null;
+}
+
+function selectPath(component: Component): { cellKeys: string[]; edgeKeys: Set<string> } {
+  const startEdge = [...component.transitions].sort(compareTransitionStrength)[0];
+  if (!startEdge) {
+    return { cellKeys: [], edgeKeys: new Set<string>() };
+  }
+
+  const path = [startEdge.fromCellKey, startEdge.toCellKey];
+  const usedEdges = new Set([edgeKey(startEdge)]);
+  extendPathStart(path, usedEdges, component.transitions);
+  extendPathEnd(path, usedEdges, component.transitions);
+
+  return { cellKeys: path, edgeKeys: usedEdges };
+}
+
+function extendPathStart(
+  path: string[],
+  usedEdges: Set<string>,
+  transitions: TransitionSupport[],
+): void {
+  while (true) {
+    const current = path[0];
+    const next = bestUnusedAdjacentEdge(current, usedEdges, transitions);
+    if (!next) {
+      return;
+    }
+    usedEdges.add(edgeKey(next));
+    path.unshift(next.fromCellKey === current ? next.toCellKey : next.fromCellKey);
+  }
+}
+
+function extendPathEnd(
+  path: string[],
+  usedEdges: Set<string>,
+  transitions: TransitionSupport[],
+): void {
+  while (true) {
+    const current = path[path.length - 1];
+    const next = bestUnusedAdjacentEdge(current, usedEdges, transitions);
+    if (!next) {
+      return;
+    }
+    usedEdges.add(edgeKey(next));
+    path.push(next.fromCellKey === current ? next.toCellKey : next.fromCellKey);
+  }
+}
+
+function bestUnusedAdjacentEdge(
+  cellKey: string,
+  usedEdges: Set<string>,
+  transitions: TransitionSupport[],
+): TransitionSupport | undefined {
+  return transitions
+    .filter((transition) =>
+      !usedEdges.has(edgeKey(transition)) &&
+      (transition.fromCellKey === cellKey || transition.toCellKey === cellKey)
+    )
+    .sort((left, right) => edgeScore(right) - edgeScore(left))[0];
+}
+
+function branchAmbiguity(transitions: TransitionSupport[]): number {
+  const outgoing = new Map<string, TransitionSupport[]>();
   for (const transition of transitions) {
     const list = outgoing.get(transition.fromCellKey) ?? [];
     list.push(transition);
     outgoing.set(transition.fromCellKey, list);
   }
 
-  const ambiguous = [...outgoing.values()].filter((list) => list.length > 1);
-  if (outgoing.size === 0) {
+  const ratios = [...outgoing.values()]
+    .filter((list) => list.length > 1)
+    .map((list) => {
+      const sorted = [...list].sort(compareTransitionStrength);
+      return supportStrength(sorted[1]) / Math.max(1, supportStrength(sorted[0]));
+    });
+  return ratios.length === 0 ? 0 : clamp(average(ratios));
+}
+
+function transitionConsistency(
+  transitions: TransitionSupport[],
+  selectedEdgeKeys: Set<string>,
+): number {
+  const allSupport = sum(transitions.map((transition) => transition.sessionCount));
+  const selectedSupport = sum(
+    transitions
+      .filter((transition) => selectedEdgeKeys.has(edgeKey(transition)))
+      .map((transition) => transition.sessionCount),
+  );
+  return clamp(selectedSupport / Math.max(1, allSupport));
+}
+
+function scoreGpsQuality(cells: Array<{ qualityScore: number }>): number {
+  return cells.length === 0 ? 0 : average(cells.map((cell) => cell.qualityScore));
+}
+
+function rejectedPointRate(
+  inferredAcceptedCount: number,
+  inputs: RouteQualityInputs,
+): number {
+  const accepted = inputs.acceptedPointCount ?? inferredAcceptedCount;
+  const rejected = inputs.rejectedPointCount ?? 0;
+  return clamp(rejected / Math.max(1, accepted + rejected));
+}
+
+function isRecommended(route: {
+  confidence: number;
+  sessionCount: number;
+  branchAmbiguityScore: number;
+  gpsQualityScore: number;
+  rejectedPointRate: number;
+  recencyScore: number;
+}): boolean {
+  return route.confidence >= recommendedConfidence &&
+    route.sessionCount >= recommendedSessionCount &&
+    route.branchAmbiguityScore <= maxRecommendedBranchAmbiguity &&
+    route.gpsQualityScore >= minRecommendedGpsQuality &&
+    route.rejectedPointRate <= maxRecommendedRejectedPointRate &&
+    route.recencyScore >= minRecommendedRecency;
+}
+
+function latestEvidenceAt(points: RoutePoint[], inputs: RouteQualityInputs): string | null {
+  if (inputs.latestEvidenceAt !== undefined) {
+    return inputs.latestEvidenceAt;
+  }
+  return points
+    .map((point) => point.recordedAt)
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
+}
+
+function recencyScore(latestAt: string | null, now = new Date()): number {
+  if (latestAt === null) {
     return 0;
   }
-  return clamp(ambiguous.length / outgoing.size);
+  const ageMs = now.getTime() - Date.parse(latestAt);
+  if (!Number.isFinite(ageMs)) {
+    return 0;
+  }
+  const ageDays = ageMs / (24 * 60 * 60 * 1000);
+  if (ageDays <= 30) {
+    return 1;
+  }
+  if (ageDays <= 90) {
+    return 0.5;
+  }
+  return 0.2;
 }
 
 function qualityScore(accuracy: number | null): number {
@@ -260,8 +558,59 @@ function qualityScore(accuracy: number | null): number {
   return clamp(1 - accuracy / 100);
 }
 
+function addAdjacent(adjacency: Map<string, Set<string>>, from: string, to: string): void {
+  const next = adjacency.get(from) ?? new Set<string>();
+  next.add(to);
+  adjacency.set(from, next);
+}
+
+function publicCell(cell: CellSupport): TrailCell {
+  const { sessionIds: _, ...publicValue } = cell;
+  return publicValue;
+}
+
+function publicTransition(transition: TransitionSupport): TrailTransition {
+  const { sessionIds: _, ...publicValue } = transition;
+  return publicValue;
+}
+
+function routeFromScores(route: CanonicalRoute): CanonicalRoute {
+  return route;
+}
+
+function compareTransitionStrength(left: TrailTransition, right: TrailTransition): number {
+  return (
+    supportStrength(right) - supportStrength(left) ||
+    left.edgeCost - right.edgeCost ||
+    left.fromCellKey.localeCompare(right.fromCellKey) ||
+    left.toCellKey.localeCompare(right.toCellKey)
+  );
+}
+
+function edgeScore(transition: TrailTransition): number {
+  return transition.sessionCount * 10 + transition.transitionCount * 3 - transition.edgeCost;
+}
+
+function supportStrength(transition: TrailTransition): number {
+  return transition.sessionCount * 10 + transition.transitionCount;
+}
+
+function edgeKey(transition: TrailTransition): string {
+  return `${transition.fromCellKey}->${transition.toCellKey}`;
+}
+
+function firstCellKey(component: Component): string {
+  return component.cells
+    .map((cell) => cell.cellKey)
+    .sort()[0] ?? '';
+}
+
 function average(values: number[]): number {
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function sum(values: number[]): number {
+  return values.reduce((total, value) => total + value, 0);
 }
 
 function clamp(value: number): number {
@@ -278,5 +627,8 @@ function emptyRoute(): CanonicalRoute {
     sessionCount: 0,
     branchAmbiguityScore: 0,
     gpsQualityScore: 0,
+    transitionConsistencyScore: 0,
+    rejectedPointRate: 0,
+    recencyScore: 0,
   };
 }

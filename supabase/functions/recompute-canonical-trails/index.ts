@@ -5,10 +5,14 @@ import {
   inferCanonicalRoute,
   lineStringWkt,
   type RoutePoint,
+  type RouteQualityInputs,
 } from '../_shared/route_inference.ts';
+
+type SupabaseClientFactory = (supabaseUrl: string, serviceRoleKey: string) => any;
 
 export async function handleRecomputeCanonicalTrails(
   request: Request,
+  supabaseClientFactory: SupabaseClientFactory = createClient,
 ): Promise<Response> {
   if (request.method !== 'POST') {
     return jsonResponse({ success: false, errors: ['method_not_allowed'] }, 405);
@@ -32,13 +36,21 @@ export async function handleRecomputeCanonicalTrails(
   }
 
   const mountainId = body.mountainId;
-  const supabase = createClient(supabaseUrl, serviceRoleKey);
+  const supabase = supabaseClientFactory(supabaseUrl, serviceRoleKey);
   const pointRows = await supabase.rpc('accepted_route_points', {
     p_mountain_id: mountainId,
   });
 
   if (pointRows.error) {
     return jsonResponse({ success: false, errors: [pointRows.error.message] }, 500);
+  }
+
+  const qualityRows = await supabase.rpc('route_quality_inputs', {
+    p_mountain_id: mountainId,
+  });
+
+  if (qualityRows.error) {
+    return jsonResponse({ success: false, errors: [qualityRows.error.message] }, 500);
   }
 
   const points = (pointRows.data ?? []).map((row: any) => ({
@@ -53,7 +65,16 @@ export async function handleRecomputeCanonicalTrails(
     Number.isFinite(point.lat) && Number.isFinite(point.lon)
   );
 
-  const route = inferCanonicalRoute(points);
+  const qualityInputRow = Array.isArray(qualityRows.data)
+    ? qualityRows.data[0]
+    : qualityRows.data;
+  const qualityInputs: RouteQualityInputs = {
+    acceptedPointCount: qualityInputRow?.accepted_point_count,
+    rejectedPointCount: qualityInputRow?.rejected_point_count,
+    latestEvidenceAt: qualityInputRow?.latest_evidence_at ?? null,
+  };
+
+  const route = inferCanonicalRoute(points, qualityInputs);
   const previous = await supabase
     .from('canonical_trails')
     .select('version')
@@ -69,8 +90,36 @@ export async function handleRecomputeCanonicalTrails(
   const previousVersion = previous.data?.version ?? 0;
   const newVersion = previousVersion + 1;
 
-  await supabase.from('trail_cells').delete().eq('mountain_id', mountainId);
-  await supabase.from('trail_cell_transitions').delete().eq('mountain_id', mountainId);
+  const insertedTrail = await supabase.from('canonical_trails').insert({
+    mountain_id: mountainId,
+    version: newVersion,
+    geom: lineStringWkt(route.line),
+    confidence: route.confidence,
+    confidence_level: route.confidenceLevel,
+    session_count: route.sessionCount,
+    branch_ambiguity_score: route.branchAmbiguityScore,
+    gps_quality_score: route.gpsQualityScore,
+  });
+
+  if (insertedTrail.error) {
+    return jsonResponse({ success: false, errors: [insertedTrail.error.message] }, 500);
+  }
+
+  const deletedCells = await supabase
+    .from('trail_cells')
+    .delete()
+    .eq('mountain_id', mountainId);
+  if (deletedCells.error) {
+    return jsonResponse({ success: false, errors: [deletedCells.error.message] }, 500);
+  }
+
+  const deletedTransitions = await supabase
+    .from('trail_cell_transitions')
+    .delete()
+    .eq('mountain_id', mountainId);
+  if (deletedTransitions.error) {
+    return jsonResponse({ success: false, errors: [deletedTransitions.error.message] }, 500);
+  }
 
   if (route.cells.length > 0) {
     const insertedCells = await supabase.from('trail_cells').insert(route.cells.map((cell) => ({
@@ -105,21 +154,6 @@ export async function handleRecomputeCanonicalTrails(
     }
   }
 
-  const insertedTrail = await supabase.from('canonical_trails').insert({
-    mountain_id: mountainId,
-    version: newVersion,
-    geom: lineStringWkt(route.line),
-    confidence: route.confidence,
-    confidence_level: route.confidenceLevel,
-    session_count: route.sessionCount,
-    branch_ambiguity_score: route.branchAmbiguityScore,
-    gps_quality_score: route.gpsQualityScore,
-  });
-
-  if (insertedTrail.error) {
-    return jsonResponse({ success: false, errors: [insertedTrail.error.message] }, 500);
-  }
-
   return jsonResponse({
     success: true,
     mountainId,
@@ -133,7 +167,7 @@ export async function handleRecomputeCanonicalTrails(
 }
 
 if (import.meta.main) {
-  Deno.serve(handleRecomputeCanonicalTrails);
+  Deno.serve((request) => handleRecomputeCanonicalTrails(request));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
