@@ -10,13 +10,19 @@ delete from public.mvp_events
 where mountain_id = 'beta-mountain';
 
 delete from public.trail_cell_transitions
-where mountain_id = 'beta-mountain';
+where route_id in (
+  select id from public.routes where mountain_id = 'beta-mountain'
+);
 
 delete from public.trail_cells
-where mountain_id = 'beta-mountain';
+where route_id in (
+  select id from public.routes where mountain_id = 'beta-mountain'
+);
 
 delete from public.canonical_trails
-where mountain_id = 'beta-mountain';
+where route_id in (
+  select id from public.routes where mountain_id = 'beta-mountain'
+);
 
 delete from public.rejected_track_points
 where session_id in (
@@ -39,11 +45,19 @@ delete from public.hiking_sessions
 where mountain_id = 'beta-mountain'
   and client_session_key like 'demo-sejong-route-%';
 
+delete from public.routes
+where mountain_id = 'beta-mountain';
+
 insert into public.mountains (id, display_name, source)
 values ('beta-mountain', 'Sejong Demo Ridge', 'demo')
 on conflict (id) do update
   set display_name = excluded.display_name,
       source = excluded.source;
+
+insert into public.routes (id, mountain_id, display_name)
+values ('beta-mountain-main', 'beta-mountain', 'Main Trail')
+on conflict (id) do update
+  set display_name = excluded.display_name;
 
 with route_points(sequence_index, lat, lon, altitude) as (
   values
@@ -60,6 +74,7 @@ demo_sessions as (
     id,
     user_id,
     mountain_id,
+    route_id,
     client_session_key,
     started_at,
     ended_at,
@@ -74,6 +89,7 @@ demo_sessions as (
       '90000000-0000-4000-8000-000000000001',
       '10000000-0000-4000-8000-000000000001',
       'beta-mountain',
+      'beta-mountain-main',
       'demo-sejong-route-1',
       '2026-05-08T00:00:00Z',
       '2026-05-08T00:42:00Z',
@@ -87,6 +103,7 @@ demo_sessions as (
       '90000000-0000-4000-8000-000000000002',
       '10000000-0000-4000-8000-000000000002',
       'beta-mountain',
+      'beta-mountain-main',
       'demo-sejong-route-2',
       '2026-05-08T01:00:00Z',
       '2026-05-08T01:44:00Z',
@@ -100,6 +117,7 @@ demo_sessions as (
       '90000000-0000-4000-8000-000000000003',
       '10000000-0000-4000-8000-000000000003',
       'beta-mountain',
+      'beta-mountain-main',
       'demo-sejong-route-3',
       '2026-05-08T02:00:00Z',
       '2026-05-08T02:41:00Z',
@@ -113,6 +131,7 @@ demo_sessions as (
       '90000000-0000-4000-8000-000000000004',
       '10000000-0000-4000-8000-000000000004',
       'beta-mountain',
+      'beta-mountain-main',
       'demo-sejong-route-4',
       '2026-05-08T03:00:00Z',
       '2026-05-08T03:46:00Z',
@@ -123,7 +142,8 @@ demo_sessions as (
       '2026-08-08T00:00:00Z'
     )
   on conflict (id) do update
-    set status = excluded.status,
+    set status               = excluded.status,
+        route_id             = excluded.route_id,
         accepted_point_count = excluded.accepted_point_count,
         rejected_point_count = excluded.rejected_point_count
   returning id, client_session_key, started_at
@@ -236,7 +256,7 @@ rejected_seed as (
 ),
 canonical_seed as (
   insert into public.canonical_trails (
-    mountain_id,
+    route_id,
     version,
     geom,
     confidence,
@@ -247,7 +267,7 @@ canonical_seed as (
     updated_at
   )
   values (
-    'beta-mountain',
+    'beta-mountain-main',
     100,
     'LINESTRING(127.3082 36.4938,127.3096 36.4928,127.3112 36.4916,127.3129 36.4904,127.3146 36.4892,127.3166 36.4881,127.3188 36.4868)'::geography,
     0.84,
@@ -271,7 +291,7 @@ cell_values(cell_key, lat, lon, point_count, session_count, avg_altitude, last_s
 ),
 cell_seed as (
   insert into public.trail_cells (
-    mountain_id,
+    route_id,
     cell_key,
     geom,
     point_count,
@@ -282,7 +302,7 @@ cell_seed as (
     quality_score
   )
   select
-    'beta-mountain',
+    'beta-mountain-main',
     cell_key,
     st_setsrid(st_makepoint(lon, lat), 4326)::geography,
     point_count,
@@ -305,7 +325,7 @@ transition_values(from_cell_key, to_cell_key, transition_count, session_count, e
 ),
 transition_seed as (
   insert into public.trail_cell_transitions (
-    mountain_id,
+    route_id,
     from_cell_key,
     to_cell_key,
     transition_count,
@@ -313,7 +333,7 @@ transition_seed as (
     edge_cost
   )
   select
-    'beta-mountain',
+    'beta-mountain-main',
     from_cell_key,
     to_cell_key,
     transition_count,
@@ -339,12 +359,13 @@ event_seed as (
   returning id
 )
 select
-  'beta-mountain' as mountain_id,
-  (select count(*) from track_seed) as accepted_track_points,
-  (select count(*) from rejected_seed) as rejected_track_points,
-  (select count(*) from canonical_seed) as canonical_routes,
-  (select count(*) from cell_seed) as trail_cells,
-  (select count(*) from transition_seed) as trail_transitions,
-  (select count(*) from event_seed) as operator_events;
+  'beta-mountain'                                as mountain_id,
+  'beta-mountain-main'                           as route_id,
+  (select count(*) from track_seed)             as accepted_track_points,
+  (select count(*) from rejected_seed)           as rejected_track_points,
+  (select count(*) from canonical_seed)          as canonical_routes,
+  (select count(*) from cell_seed)               as trail_cells,
+  (select count(*) from transition_seed)         as trail_transitions,
+  (select count(*) from event_seed)              as operator_events;
 
 commit;
