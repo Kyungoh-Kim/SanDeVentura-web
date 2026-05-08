@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { DiscoveryPage } from './pages/DiscoveryPage';
 import { MountainsPage } from './pages/MountainsPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { QualityPage } from './pages/QualityPage';
@@ -12,6 +13,7 @@ const NAV = [
   { id: 'sessions',   label: 'Sessions' },
   { id: 'quality',    label: 'Quality' },
   { id: 'mountains',  label: 'Mountains' },
+  { id: 'discovery',  label: 'Discovery' },
 ] as const;
 
 type PageId = (typeof NAV)[number]['id'];
@@ -101,6 +103,9 @@ export function OperatorApp() {
           <div style={{ display: active === 'mountains' ? 'block' : 'none' }}>
             <div className="page-section"><MountainsPage /></div>
           </div>
+          <div style={{ display: active === 'discovery' ? 'block' : 'none' }}>
+            <div className="page-section"><DiscoveryPage /></div>
+          </div>
         </main>
       </div>
     </div>
@@ -158,6 +163,14 @@ function NavIcon({ id }: { id: string }) {
     return (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M3 20L9 8l4 5 3-4 5 11H3Z" />
+      </svg>
+    );
+  }
+  if (id === 'discovery') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+        <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
       </svg>
     );
   }

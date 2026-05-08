@@ -26,3 +26,12 @@ verify_jwt = false
 
 [functions.recompute-canonical-trails]
 verify_jwt = false
+
+[functions.match-and-aggregate-sessions]
+verify_jwt = false
+
+[functions.promote-candidate-cluster]
+verify_jwt = false
+
+[functions.get-mountains]
+verify_jwt = false
