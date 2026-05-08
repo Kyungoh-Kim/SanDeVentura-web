@@ -51,3 +51,12 @@ Expected result: recompute creates a `recommended` route, route retrieval
 returns GeoJSON, and snap-position returns `on_route`, `caution`, and
 `away_from_route` for the near/mid/far probes. The branch replay should produce
 a lower-confidence reference route because ambiguity is higher.
+
+For Android Emulator mobile testing, run the Flutter app with:
+
+```powershell
+cd ..\..\mobile
+flutter run --dart-define=SUPABASE_FUNCTIONS_URL=http://10.0.2.2:54321/functions/v1
+```
+
+Use `adb reverse` only for a physical device or explicit localhost workflow.
