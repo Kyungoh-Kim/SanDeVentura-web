@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Feature from 'ol/Feature';
 import Map from 'ol/Map';
 import View from 'ol/View';
@@ -8,6 +8,7 @@ import VectorLayer from 'ol/layer/Vector';
 import { fromLonLat } from 'ol/proj';
 import OSM from 'ol/source/OSM';
 import VectorSource from 'ol/source/Vector';
+import XYZ from 'ol/source/XYZ';
 import { Stroke, Style } from 'ol/style';
 import 'ol/ol.css';
 
@@ -24,8 +25,37 @@ const routeColors: Record<RouteState, string> = {
   none: '#7a8691',
 };
 
+type RouteMapLayerId = 'map' | 'satellite';
+
+const mapLayers: Record<
+  RouteMapLayerId,
+  {
+    label: string;
+    attribution: string;
+    createSource: () => OSM | XYZ;
+  }
+> = {
+  map: {
+    label: 'Map',
+    attribution: 'OpenStreetMap contributors',
+    createSource: () => new OSM(),
+  },
+  satellite: {
+    label: 'Satellite',
+    attribution: 'Esri World Imagery',
+    createSource: () =>
+      new XYZ({
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attributions: 'Esri World Imagery',
+        maxZoom: 19,
+      }),
+  },
+};
+
 export function OperatorRouteMap({ geometry, routeState }: OperatorRouteMapProps) {
   const mapElementRef = useRef<HTMLDivElement | null>(null);
+  const [selectedLayer, setSelectedLayer] = useState<RouteMapLayerId>('map');
+  const layerConfig = mapLayers[selectedLayer];
 
   useEffect(() => {
     if (!mapElementRef.current || geometry === null) {
@@ -49,7 +79,7 @@ export function OperatorRouteMap({ geometry, routeState }: OperatorRouteMapProps
     const map = new Map({
       target: mapElementRef.current,
       layers: [
-        new TileLayer({ source: new OSM() }),
+        new TileLayer({ source: layerConfig.createSource() }),
         vectorLayer,
       ],
       view: new View({
@@ -65,7 +95,7 @@ export function OperatorRouteMap({ geometry, routeState }: OperatorRouteMapProps
     return () => {
       map.setTarget(undefined);
     };
-  }, [geometry, routeState]);
+  }, [geometry, layerConfig, routeState]);
 
   if (geometry === null) {
     return (
@@ -79,7 +109,20 @@ export function OperatorRouteMap({ geometry, routeState }: OperatorRouteMapProps
   return (
     <div aria-label="Operator route map" className="route-map-shell">
       <div className="route-map" ref={mapElementRef} />
-      <span className="map-attribution">OpenStreetMap contributors</span>
+      <div aria-label="Route map layer" className="map-layer-switch" role="group">
+        {Object.entries(mapLayers).map(([id, config]) => (
+          <button
+            aria-pressed={selectedLayer === id}
+            className={selectedLayer === id ? 'active' : undefined}
+            key={id}
+            onClick={() => setSelectedLayer(id as RouteMapLayerId)}
+            type="button"
+          >
+            {config.label}
+          </button>
+        ))}
+      </div>
+      <span className="map-attribution">{layerConfig.attribution}</span>
     </div>
   );
 }

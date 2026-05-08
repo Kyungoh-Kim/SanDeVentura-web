@@ -249,6 +249,34 @@ td span {
   height: 320px;
 }
 
+.map-layer-switch {
+  background: rgb(255 255 255 / 88%);
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  position: absolute;
+  right: 8px;
+  top: 8px;
+}
+
+.map-layer-switch button {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #42514b;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.map-layer-switch button.active {
+  background: #1f8f5f;
+  color: #fff;
+}
+
 .map-attribution {
   background: rgb(255 255 255 / 85%);
   bottom: 8px;
