@@ -1,6 +1,6 @@
 begin;
 
-select plan(18);
+select plan(23);
 
 select has_table('public', 'trail_cells', 'trail_cells table exists');
 select has_table('public', 'trail_cell_transitions', 'trail_cell_transitions table exists');
@@ -10,6 +10,8 @@ select has_function('public', 'snap_position_to_trail', array['text', 'double pr
 select has_function('public', 'accepted_route_points', array['text'], 'accepted route points RPC exists');
 select has_function('public', 'route_quality_inputs', array['text'], 'route quality input RPC exists');
 select has_view('public', 'operator_route_coverage', 'operator route coverage view exists');
+select has_view('public', 'operator_route_quality_detail', 'operator route quality detail view exists');
+select has_view('public', 'operator_quality_summary', 'operator quality summary view exists');
 
 insert into public.mountains (id, display_name, source)
 values ('quality-test-mountain', 'Quality Test Mountain', 'test');
@@ -82,10 +84,26 @@ insert into public.track_points (
     0
   );
 
+insert into public.rejected_track_points (
+  session_id,
+  reason,
+  recorded_at,
+  lat,
+  lon,
+  point_sequence_index
+) values (
+  '22222222-2222-2222-2222-222222222222',
+  'low_quality',
+  '2026-05-08T02:10:00Z',
+  37.5011,
+  127.0011,
+  1
+);
+
 select results_eq(
   $$ select accepted_point_count, rejected_point_count, latest_evidence_at
      from public.route_quality_inputs('quality-test-mountain') $$,
-  $$ values (5::integer, 5::integer, '2026-05-08T02:00:00Z'::timestamptz) $$,
+  $$ values (5::integer, 5::integer, '2026-05-08T02:10:00Z'::timestamptz) $$,
   'route quality input RPC returns evidence counts and latest timestamp'
 );
 
@@ -151,6 +169,35 @@ select is(
   ),
   'recommended',
   'operator route coverage exposes recommended state'
+);
+
+select results_eq(
+  $$ select accepted_point_count, rejected_point_count, latest_evidence_at
+     from public.operator_route_quality_detail
+     where mountain_id = 'quality-test-mountain' $$,
+  $$ values (5::integer, 5::integer, '2026-05-08T02:10:00Z'::timestamptz) $$,
+  'operator route quality detail exposes evidence counts'
+);
+
+select is_empty(
+  $$
+    select column_name
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'operator_route_quality_detail'
+      and column_name in ('lat', 'lon', 'geom', 'trail_geojson')
+  $$,
+  'operator route quality detail does not expose raw coordinates'
+);
+
+select isnt(
+  (
+    select route_coverage
+    from public.operator_quality_summary
+    limit 1
+  ),
+  null,
+  'operator quality summary exposes route coverage'
 );
 
 select isnt(

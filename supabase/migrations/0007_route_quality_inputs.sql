@@ -21,10 +21,20 @@ as $$
     select max(track_points.recorded_at) as latest_evidence_at
     from public.track_points
     where track_points.mountain_id = p_mountain_id
+  ),
+  latest_rejected_points as (
+    select max(rejected_track_points.recorded_at) as latest_rejected_evidence_at
+    from public.rejected_track_points
+    join public.hiking_sessions
+      on hiking_sessions.id = rejected_track_points.session_id
+    where hiking_sessions.mountain_id = p_mountain_id
   )
   select
     session_counts.accepted_point_count,
     session_counts.rejected_point_count,
-    latest_points.latest_evidence_at
-  from session_counts, latest_points
+    greatest(
+      latest_points.latest_evidence_at,
+      latest_rejected_points.latest_rejected_evidence_at
+    ) as latest_evidence_at
+  from session_counts, latest_points, latest_rejected_points
 $$;

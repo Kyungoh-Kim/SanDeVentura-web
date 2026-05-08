@@ -4,8 +4,9 @@ export type UploadState = 'local' | 'queued' | 'uploaded' | 'retry' | 'failed';
 export type OperatorOverviewMetrics = {
   uploadSuccessRate: number | null;
   queuedUploads: number;
-  routeCoverage: number;
+  routeCoverage: number | null;
   snapRequests: number;
+  trailServed: number;
 };
 
 export type OperatorRouteCoverage = {
@@ -29,6 +30,13 @@ export type OperatorRouteDetail = OperatorRouteCoverage & {
   trailGeoJson: GeoJsonLineString | null;
 };
 
+export type OperatorRouteQualityDetail = OperatorRouteCoverage & {
+  acceptedPointCount: number;
+  rejectedPointCount: number;
+  latestEvidenceAt: string | null;
+  updatedAt: string | null;
+};
+
 export type OperatorSessionIngestion = {
   sessionId: string;
   mountainId: string;
@@ -44,6 +52,7 @@ export const operatorOverviewMetrics: OperatorOverviewMetrics = {
   queuedUploads: 2,
   routeCoverage: 0.67,
   snapRequests: 18,
+  trailServed: 12,
 };
 
 export const routeCoverageRows: OperatorRouteDetail[] = [
@@ -120,3 +129,18 @@ export const sessionIngestionRows: OperatorSessionIngestion[] = [
     lastError: 'network timeout',
   },
 ];
+
+export const routeQualityRows: OperatorRouteQualityDetail[] = routeCoverageRows.map((row) => ({
+  mountainId: row.mountainId,
+  displayName: row.displayName,
+  routeState: row.routeState,
+  confidence: row.confidence,
+  version: row.version,
+  sessionCount: row.sessionCount,
+  branchAmbiguityScore: row.branchAmbiguityScore,
+  gpsQualityScore: row.gpsQualityScore,
+  acceptedPointCount: row.routeState === 'none' ? 0 : row.sessionCount * 12,
+  rejectedPointCount: row.routeState === 'reference' ? 5 : row.routeState === 'none' ? 0 : 2,
+  latestEvidenceAt: row.updatedAt,
+  updatedAt: row.updatedAt,
+}));

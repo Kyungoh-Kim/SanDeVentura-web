@@ -1,4 +1,14 @@
-import { routeCoverageRows, type GeoJsonLineString, type OperatorRouteCoverage, type OperatorRouteDetail, type RouteState } from './readModels';
+import {
+  operatorOverviewMetrics,
+  routeCoverageRows,
+  routeQualityRows,
+  type GeoJsonLineString,
+  type OperatorOverviewMetrics,
+  type OperatorRouteCoverage,
+  type OperatorRouteDetail,
+  type OperatorRouteQualityDetail,
+  type RouteState,
+} from './readModels';
 import { supabase } from './supabaseClient';
 
 type CoverageRow = {
@@ -25,6 +35,47 @@ type LatestTrailRow = {
   gps_quality_score: number | null;
 };
 
+type SummaryRow = {
+  upload_success_rate: number | null;
+  queued_uploads: number;
+  route_coverage: number | null;
+  snap_requests: number;
+  trail_served: number;
+};
+
+type QualityDetailRow = CoverageRow & {
+  accepted_point_count: number;
+  rejected_point_count: number;
+  latest_evidence_at: string | null;
+};
+
+export async function fetchOperatorSummary(): Promise<OperatorOverviewMetrics> {
+  if (supabase === null) {
+    return operatorOverviewMetrics;
+  }
+
+  const { data, error } = await supabase
+    .from('operator_quality_summary')
+    .select('upload_success_rate, queued_uploads, route_coverage, snap_requests, trail_served')
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const row = data as SummaryRow | null;
+  return row === null
+    ? operatorOverviewMetrics
+    : {
+        uploadSuccessRate: row.upload_success_rate,
+        queuedUploads: row.queued_uploads,
+        routeCoverage: row.route_coverage,
+        snapRequests: row.snap_requests,
+        trailServed: row.trail_served,
+      };
+}
+
 export async function fetchRouteCoverage(): Promise<OperatorRouteCoverage[]> {
   if (supabase === null) {
     return routeCoverageRows;
@@ -50,6 +101,38 @@ export async function fetchRouteCoverage(): Promise<OperatorRouteCoverage[]> {
     sessionCount: row.session_count,
     branchAmbiguityScore: row.branch_ambiguity_score,
     gpsQualityScore: row.gps_quality_score,
+  }));
+}
+
+export async function fetchRouteQualityDetails(): Promise<OperatorRouteQualityDetail[]> {
+  if (supabase === null) {
+    return routeQualityRows;
+  }
+
+  const { data, error } = await supabase
+    .from('operator_route_quality_detail')
+    .select(
+      'mountain_id, display_name, route_state, confidence, version, session_count, branch_ambiguity_score, gps_quality_score, accepted_point_count, rejected_point_count, latest_evidence_at, updated_at',
+    )
+    .order('mountain_id');
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return ((data ?? []) as QualityDetailRow[]).map((row) => ({
+    mountainId: row.mountain_id,
+    displayName: row.display_name,
+    routeState: row.route_state,
+    confidence: row.confidence,
+    version: row.version,
+    sessionCount: row.session_count,
+    branchAmbiguityScore: row.branch_ambiguity_score,
+    gpsQualityScore: row.gps_quality_score,
+    acceptedPointCount: row.accepted_point_count,
+    rejectedPointCount: row.rejected_point_count,
+    latestEvidenceAt: row.latest_evidence_at,
+    updatedAt: row.updated_at,
   }));
 }
 
