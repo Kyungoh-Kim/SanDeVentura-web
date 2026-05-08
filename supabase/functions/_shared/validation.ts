@@ -15,6 +15,7 @@ export type UploadRequest = {
   idempotencyKey: string;
   uploadConsentVersion: string;
   mountainId: string;
+  routeId: string | null;
   startedAt: string;
   endedAt: string;
   points: UploadPoint[];
@@ -65,6 +66,9 @@ export function parseUploadRequest(value: unknown): UploadRequest {
     'uploadConsentVersion',
   );
   const mountainId = requireString(value.mountainId, 'mountainId');
+  const routeId = typeof value.routeId === 'string' && value.routeId.trim().length > 0
+    ? value.routeId
+    : null;
   const startedAt = requireIsoDate(value.startedAt, 'startedAt');
   const endedAt = requireIsoDate(value.endedAt, 'endedAt');
 
@@ -80,6 +84,7 @@ export function parseUploadRequest(value: unknown): UploadRequest {
     idempotencyKey,
     uploadConsentVersion: consentVersion,
     mountainId,
+    routeId,
     startedAt,
     endedAt,
     points: value.points as UploadPoint[],

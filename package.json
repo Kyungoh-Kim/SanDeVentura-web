@@ -11,11 +11,12 @@
     "test:functions": "npx deno test --allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SPRINT2_DEV_USER_ID supabase/tests/functions",
     "test:db": "npx supabase test db",
     "supabase:reset": "npx supabase db reset",
-    "supabase:functions": "npx supabase functions serve upload-session --no-verify-jwt --env-file supabase/.env.local"
+    "supabase:functions": "npx supabase functions serve --no-verify-jwt --env-file supabase/.env.local"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.0.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "ol": "^10.9.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.8.0",
