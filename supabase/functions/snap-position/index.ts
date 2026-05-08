@@ -21,14 +21,14 @@ export async function handleSnapPosition(request: Request): Promise<Response> {
     return jsonResponse({ success: false, errors: ['request_body must be an object'] }, 400);
   }
 
-  const mountainId = requiredString(body.mountainId, 'mountainId');
+  const routeId = requiredString(body.routeId, 'routeId');
   const lat = requiredCoordinate(body.lat, 'lat', -90, 90);
   const lon = requiredCoordinate(body.lon, 'lon', -180, 180);
   const accuracy = typeof body.accuracy === 'number' && Number.isFinite(body.accuracy)
     ? body.accuracy
     : null;
 
-  if (mountainId instanceof Response) return mountainId;
+  if (routeId instanceof Response) return routeId;
   if (lat instanceof Response) return lat;
   if (lon instanceof Response) return lon;
 
@@ -40,7 +40,7 @@ export async function handleSnapPosition(request: Request): Promise<Response> {
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
   const result = await supabase.rpc('snap_position_to_trail', {
-    p_mountain_id: mountainId,
+    p_route_id: routeId,
     p_lat: lat,
     p_lon: lon,
   });
@@ -60,10 +60,19 @@ export async function handleSnapPosition(request: Request): Promise<Response> {
 
   const distanceMeters = row.distance_meters as number;
   const routeJudgment = judgeDistance(distanceMeters);
+
+  const routeLookup = await supabase
+    .from('routes')
+    .select('mountain_id')
+    .eq('id', routeId)
+    .maybeSingle();
+  const mountainId = routeLookup.data?.mountain_id ?? null;
+
   await supabase.from('mvp_events').insert({
     mountain_id: mountainId,
     event_name: 'snap_requested',
     event_payload: {
+      routeId,
       routeJudgment,
       distanceBucket: distanceBucket(distanceMeters),
       trailVersion: row.trail_version,
@@ -72,7 +81,7 @@ export async function handleSnapPosition(request: Request): Promise<Response> {
 
   return jsonResponse({
     success: true,
-    input: { mountainId, lat, lon, accuracy },
+    input: { routeId, lat, lon, accuracy },
     snapped: {
       lat: row.snapped_lat,
       lon: row.snapped_lon,

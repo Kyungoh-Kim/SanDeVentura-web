@@ -91,6 +91,7 @@ export async function handleUploadSession(request: Request): Promise<Response> {
     .insert({
       user_id: devUserId,
       mountain_id: payload.mountainId,
+      route_id: payload.routeId ?? null,
       client_session_key: payload.idempotencyKey,
       started_at: payload.startedAt,
       ended_at: payload.endedAt,

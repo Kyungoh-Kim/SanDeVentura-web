@@ -512,6 +512,12 @@ tr:hover td {
   color: var(--red);
 }
 
+.notice.success {
+  background: #f0faf3;
+  border-color: #9dd4b0;
+  color: #1a6b3c;
+}
+
 .notice span {
   color: inherit;
   font-size: 12px;

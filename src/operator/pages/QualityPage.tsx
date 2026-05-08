@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { routeQualityRows, type OperatorRouteQualityDetail } from '../data/readModels';
+import { type OperatorRouteQualityDetail } from '../data/readModels';
+import { type MatchAndAggregateResult, triggerMatchAndAggregate } from '../data/operationsRepository';
 import { fetchRouteQualityDetails } from '../data/routesRepository';
 
 export function QualityPage() {
-  const [rows, setRows] = useState<OperatorRouteQualityDetail[]>(routeQualityRows);
+  const [rows, setRows] = useState<OperatorRouteQualityDetail[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [recalculating, setRecalculating] = useState(false);
+  const [recalcResult, setRecalcResult] = useState<MatchAndAggregateResult | null>(null);
+  const [recalcError, setRecalcError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -14,6 +18,23 @@ export function QualityPage() {
       .catch((nextError: Error) => { if (!cancelled) setError(nextError.message); });
     return () => { cancelled = true; };
   }, []);
+
+  async function handleRecalculate() {
+    setRecalculating(true);
+    setRecalcResult(null);
+    setRecalcError(null);
+    try {
+      const result = await triggerMatchAndAggregate();
+      setRecalcResult(result);
+      // Refresh quality rows after recalculation
+      const nextRows = await fetchRouteQualityDetails();
+      setRows(nextRows);
+    } catch (err) {
+      setRecalcError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRecalculating(false);
+    }
+  }
 
   const counts = useMemo(() => ({
     recommended: rows.filter((row) => row.routeState === 'recommended').length,
@@ -31,7 +52,36 @@ export function QualityPage() {
       <div className="page-header">
         <h2>Quality</h2>
         <span className="page-badge">Operator only</span>
+        <button
+          className="btn btn-ghost"
+          onClick={handleRecalculate}
+          disabled={recalculating}
+          style={{ marginLeft: 'auto' }}
+        >
+          {recalculating ? 'Recalculating…' : 'Recalculate hitmaps'}
+        </button>
       </div>
+
+      {recalcResult && (
+        <div className="notice success">
+          <strong>Recalculation complete</strong>
+          <span>
+            {recalcResult.processedSessions} sessions processed &middot;{' '}
+            {recalcResult.affectedRoutes} routes updated &middot;{' '}
+            {recalcResult.orphanCellsAdded} orphan cells added
+            {recalcResult.candidateClustersFormed > 0
+              ? ` · ${recalcResult.candidateClustersFormed} candidate clusters`
+              : ''}
+          </span>
+        </div>
+      )}
+
+      {recalcError && (
+        <div className="notice error">
+          <strong>Recalculation failed</strong>
+          <span>{recalcError}</span>
+        </div>
+      )}
 
       {error && (
         <div className="notice error">
@@ -69,7 +119,7 @@ export function QualityPage() {
         <div style={{ display: 'grid', gap: 14 }}>
           <div className="table-panel">
             <div className="table-panel-header">
-              <span className="table-panel-title">Route coverage by mountain</span>
+              <span className="table-panel-title">Route coverage</span>
             </div>
             <table>
               <thead>
@@ -87,10 +137,10 @@ export function QualityPage() {
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.mountainId}>
+                  <tr key={row.routeId ?? row.mountainId}>
                     <td>
-                      <span className="cell-name">{row.displayName}</span>
-                      <span className="cell-sub">{row.mountainId}</span>
+                      <span className="cell-name">{row.mountainDisplayName}</span>
+                      <span className="cell-sub">{row.routeDisplayName ?? '—'} · {row.mountainId}</span>
                     </td>
                     <td>
                       <span className={`status-badge ${row.routeState}`}>{row.routeState}</span>

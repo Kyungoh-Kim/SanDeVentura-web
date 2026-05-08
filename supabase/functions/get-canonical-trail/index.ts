@@ -7,9 +7,9 @@ export async function handleGetCanonicalTrail(request: Request): Promise<Respons
     return jsonResponse({ success: false, errors: ['method_not_allowed'] }, 405);
   }
 
-  const mountainId = new URL(request.url).searchParams.get('mountainId');
-  if (mountainId === null || mountainId.trim().length === 0) {
-    return jsonResponse({ success: false, errors: ['mountainId is required'] }, 400);
+  const routeId = new URL(request.url).searchParams.get('routeId');
+  if (routeId === null || routeId.trim().length === 0) {
+    return jsonResponse({ success: false, errors: ['routeId is required'] }, 400);
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
@@ -20,7 +20,7 @@ export async function handleGetCanonicalTrail(request: Request): Promise<Respons
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
   const result = await supabase.rpc('latest_canonical_trail', {
-    p_mountain_id: mountainId,
+    p_route_id: routeId,
   });
 
   if (result.error) {
@@ -29,9 +29,15 @@ export async function handleGetCanonicalTrail(request: Request): Promise<Respons
 
   const row = result.data?.[0];
   if (!row) {
+    const routeLookup = await supabase
+      .from('routes')
+      .select('mountain_id')
+      .eq('id', routeId)
+      .maybeSingle();
     return jsonResponse({
       success: true,
-      mountainId,
+      routeId,
+      mountainId: routeLookup.data?.mountain_id ?? null,
       routeState: 'none',
       version: null,
       confidence: null,
@@ -46,9 +52,10 @@ export async function handleGetCanonicalTrail(request: Request): Promise<Respons
   }
 
   await supabase.from('mvp_events').insert({
-    mountain_id: mountainId,
+    mountain_id: row.mountain_id,
     event_name: 'trail_served',
     event_payload: {
+      routeId,
       routeState: row.route_state,
       version: row.version,
       confidence: row.confidence,
@@ -57,7 +64,8 @@ export async function handleGetCanonicalTrail(request: Request): Promise<Respons
 
   return jsonResponse({
     success: true,
-    mountainId,
+    routeId,
+    mountainId: row.mountain_id,
     routeState: row.route_state,
     version: row.version,
     confidence: row.confidence,

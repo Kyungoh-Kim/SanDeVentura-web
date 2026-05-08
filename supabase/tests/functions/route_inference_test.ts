@@ -1,5 +1,7 @@
 import {
+  buildSessionHitmap,
   inferCanonicalRoute,
+  inferCanonicalRouteFromCells,
   lineStringWkt,
   type RoutePoint,
 } from '../../functions/_shared/route_inference.ts';
@@ -118,7 +120,7 @@ Deno.test('inferCanonicalRoute scores rejected and stale evidence', () => {
   );
 });
 
-Deno.test('get-canonical-trail requires mountainId before database access', async () => {
+Deno.test('get-canonical-trail requires routeId before database access', async () => {
   const response = await handleGetCanonicalTrail(
     new Request('http://localhost/get-canonical-trail'),
   );
@@ -126,7 +128,7 @@ Deno.test('get-canonical-trail requires mountainId before database access', asyn
   assertEquals(response.status, 400);
   assertEquals(await response.json(), {
     success: false,
-    errors: ['mountainId is required'],
+    errors: ['routeId is required'],
   });
 });
 
@@ -140,7 +142,7 @@ Deno.test('recompute keeps canonical insert before debug replacement failure', a
     const response = await handleRecomputeCanonicalTrails(
       new Request('http://localhost/recompute-canonical-trails', {
         method: 'POST',
-        body: JSON.stringify({ mountainId: 'beta-mountain' }),
+        body: JSON.stringify({ routeId: 'beta-mountain-main' }),
       }),
       () => mockSupabaseClient(operations),
     );
@@ -179,6 +181,67 @@ Deno.test('snap-position validates input before database access', async () => {
     success: false,
     errors: ['invalid_lat'],
   });
+});
+
+Deno.test('buildSessionHitmap produces cells and transitions from raw points', () => {
+  const points = repeatedTracePoints(1, { length: 5, samplesPerCell: 2 });
+  const { cells, transitions } = buildSessionHitmap(points);
+
+  assert(cells.length >= 4, 'expected cells from 5 distinct positions');
+  assert(transitions.length >= 4, 'expected transitions between cells');
+  assert(
+    cells.every((c) => c.pointCount >= 1 && c.sessionCount >= 1),
+    'all cells should have positive counts',
+  );
+  assert(
+    transitions.every((t) => t.transitionCount >= 1),
+    'all transitions should have positive counts',
+  );
+});
+
+Deno.test('buildSessionHitmap returns empty result for empty input', () => {
+  const { cells, transitions } = buildSessionHitmap([]);
+  assertEquals(cells.length, 0);
+  assertEquals(transitions.length, 0);
+});
+
+Deno.test('inferCanonicalRouteFromCells produces same confidence level as inferCanonicalRoute', () => {
+  const points = repeatedTracePoints(3);
+  const fromPoints = inferCanonicalRoute(points);
+  const { cells, transitions } = buildSessionHitmap(points);
+  const fromCells = inferCanonicalRouteFromCells(cells, transitions, {
+    sessionCount: 3,
+    latestEvidenceAt: new Date(Date.UTC(2026, 4, 8, 1, 4)).toISOString(),
+    now: new Date(Date.UTC(2026, 4, 8, 0, 0)),
+  });
+
+  assertEquals(fromPoints.confidenceLevel, fromCells.confidenceLevel);
+  assert(
+    Math.abs(fromPoints.confidence - fromCells.confidence) < 0.05,
+    `confidence should be close: ${fromPoints.confidence} vs ${fromCells.confidence}`,
+  );
+});
+
+Deno.test('inferCanonicalRouteFromCells returns none for empty cells', () => {
+  const result = inferCanonicalRouteFromCells([], [], {});
+  assertEquals(result.confidenceLevel, 'none');
+  assertEquals(result.confidence, 0);
+  assertEquals(result.line.length, 0);
+});
+
+Deno.test('inferCanonicalRouteFromCells uses inputs.sessionCount for confidence', () => {
+  const points = repeatedTracePoints(1, { samplesPerCell: 3 });
+  const { cells, transitions } = buildSessionHitmap(points);
+
+  const with1Session = inferCanonicalRouteFromCells(cells, transitions, { sessionCount: 1 });
+  const with3Sessions = inferCanonicalRouteFromCells(cells, transitions, { sessionCount: 3 });
+
+  assert(
+    with3Sessions.confidence >= with1Session.confidence,
+    'more sessions should yield equal or higher confidence',
+  );
+  assertEquals(with1Session.sessionCount, 1);
+  assertEquals(with3Sessions.sessionCount, 3);
 });
 
 Deno.test('judgeDistance applies MVP thresholds exactly', () => {

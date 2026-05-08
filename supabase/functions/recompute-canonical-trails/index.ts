@@ -25,8 +25,8 @@ export async function handleRecomputeCanonicalTrails(
     return jsonResponse({ success: false, errors: ['invalid_json'] }, 400);
   }
 
-  if (!isRecord(body) || typeof body.mountainId !== 'string') {
-    return jsonResponse({ success: false, errors: ['mountainId is required'] }, 400);
+  if (!isRecord(body) || typeof body.routeId !== 'string') {
+    return jsonResponse({ success: false, errors: ['routeId is required'] }, 400);
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
@@ -35,10 +35,10 @@ export async function handleRecomputeCanonicalTrails(
     return jsonResponse({ success: false, errors: ['server_not_configured'] }, 500);
   }
 
-  const mountainId = body.mountainId;
+  const routeId = body.routeId;
   const supabase = supabaseClientFactory(supabaseUrl, serviceRoleKey);
   const pointRows = await supabase.rpc('accepted_route_points', {
-    p_mountain_id: mountainId,
+    p_route_id: routeId,
   });
 
   if (pointRows.error) {
@@ -46,7 +46,7 @@ export async function handleRecomputeCanonicalTrails(
   }
 
   const qualityRows = await supabase.rpc('route_quality_inputs', {
-    p_mountain_id: mountainId,
+    p_route_id: routeId,
   });
 
   if (qualityRows.error) {
@@ -78,7 +78,7 @@ export async function handleRecomputeCanonicalTrails(
   const previous = await supabase
     .from('canonical_trails')
     .select('version')
-    .eq('mountain_id', mountainId)
+    .eq('route_id', routeId)
     .order('version', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -91,7 +91,7 @@ export async function handleRecomputeCanonicalTrails(
   const newVersion = previousVersion + 1;
 
   const insertedTrail = await supabase.from('canonical_trails').insert({
-    mountain_id: mountainId,
+    route_id: routeId,
     version: newVersion,
     geom: lineStringWkt(route.line),
     confidence: route.confidence,
@@ -108,7 +108,7 @@ export async function handleRecomputeCanonicalTrails(
   const deletedCells = await supabase
     .from('trail_cells')
     .delete()
-    .eq('mountain_id', mountainId);
+    .eq('route_id', routeId);
   if (deletedCells.error) {
     return jsonResponse({ success: false, errors: [deletedCells.error.message] }, 500);
   }
@@ -116,14 +116,14 @@ export async function handleRecomputeCanonicalTrails(
   const deletedTransitions = await supabase
     .from('trail_cell_transitions')
     .delete()
-    .eq('mountain_id', mountainId);
+    .eq('route_id', routeId);
   if (deletedTransitions.error) {
     return jsonResponse({ success: false, errors: [deletedTransitions.error.message] }, 500);
   }
 
   if (route.cells.length > 0) {
     const insertedCells = await supabase.from('trail_cells').insert(route.cells.map((cell) => ({
-      mountain_id: mountainId,
+      route_id: routeId,
       cell_key: cell.cellKey,
       geom: `POINT(${cell.lon} ${cell.lat})`,
       point_count: cell.pointCount,
@@ -141,7 +141,7 @@ export async function handleRecomputeCanonicalTrails(
   if (route.transitions.length > 0) {
     const insertedTransitions = await supabase.from('trail_cell_transitions').insert(
       route.transitions.map((transition) => ({
-        mountain_id: mountainId,
+        route_id: routeId,
         from_cell_key: transition.fromCellKey,
         to_cell_key: transition.toCellKey,
         transition_count: transition.transitionCount,
@@ -156,7 +156,7 @@ export async function handleRecomputeCanonicalTrails(
 
   return jsonResponse({
     success: true,
-    mountainId,
+    routeId,
     previousVersion,
     newVersion,
     confidence: route.confidence,

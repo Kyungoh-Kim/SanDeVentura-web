@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
 
+import { MountainsPage } from './pages/MountainsPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { QualityPage } from './pages/QualityPage';
 import { RoutesPage } from './pages/RoutesPage';
 import { SessionsPage } from './pages/SessionsPage';
 
 const NAV = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'routes',   label: 'Routes' },
-  { id: 'sessions', label: 'Sessions' },
-  { id: 'quality',  label: 'Quality' },
+  { id: 'overview',   label: 'Overview' },
+  { id: 'routes',     label: 'Routes' },
+  { id: 'sessions',   label: 'Sessions' },
+  { id: 'quality',    label: 'Quality' },
+  { id: 'mountains',  label: 'Mountains' },
 ] as const;
 
 type PageId = (typeof NAV)[number]['id'];
@@ -96,6 +98,9 @@ export function OperatorApp() {
           <div style={{ display: active === 'quality' ? 'block' : 'none' }}>
             <div className="page-section"><QualityPage /></div>
           </div>
+          <div style={{ display: active === 'mountains' ? 'block' : 'none' }}>
+            <div className="page-section"><MountainsPage /></div>
+          </div>
         </main>
       </div>
     </div>
@@ -146,6 +151,13 @@ function NavIcon({ id }: { id: string }) {
     return (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+      </svg>
+    );
+  }
+  if (id === 'mountains') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 20L9 8l4 5 3-4 5 11H3Z" />
       </svg>
     );
   }

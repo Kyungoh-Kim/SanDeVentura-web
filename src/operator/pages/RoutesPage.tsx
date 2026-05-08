@@ -16,7 +16,7 @@ const OperatorRouteMap = lazy(() =>
 
 export function RoutesPage() {
   const [rows, setRows] = useState<OperatorRouteCoverage[]>([]);
-  const [selectedMountainId, setSelectedMountainId] = useState<string | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<OperatorRouteDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,7 +26,9 @@ export function RoutesPage() {
       .then((nextRows) => {
         if (cancelled) return;
         setRows(nextRows);
-        setSelectedMountainId((current) => current ?? nextRows[0]?.mountainId ?? null);
+        setSelectedRouteId(
+          (current) => current ?? nextRows.find((r) => r.routeId !== null)?.routeId ?? null,
+        );
       })
       .catch((nextError: Error) => {
         if (!cancelled) setError(nextError.message);
@@ -35,17 +37,17 @@ export function RoutesPage() {
   }, []);
 
   useEffect(() => {
-    if (selectedMountainId === null) { setSelectedDetail(null); return undefined; }
+    if (selectedRouteId === null) { setSelectedDetail(null); return undefined; }
     let cancelled = false;
-    fetchRouteDetail(selectedMountainId)
+    fetchRouteDetail(selectedRouteId)
       .then((detail) => { if (!cancelled) setSelectedDetail(detail); })
       .catch((nextError: Error) => { if (!cancelled) setError(nextError.message); });
     return () => { cancelled = true; };
-  }, [selectedMountainId]);
+  }, [selectedRouteId]);
 
   const selectedRow = useMemo(
-    () => rows.find((row) => row.mountainId === selectedMountainId) ?? null,
-    [rows, selectedMountainId],
+    () => rows.find((row) => row.routeId === selectedRouteId) ?? null,
+    [rows, selectedRouteId],
   );
   const detail = selectedDetail ?? selectedRow;
 
@@ -64,11 +66,11 @@ export function RoutesPage() {
       )}
 
       <div className="filter-row">
-        <select className="filter-select"><option>Route state: All</option></select>
-        <select className="filter-select"><option>Mountain: All</option></select>
-        <select className="filter-select"><option>Updated: All time</option></select>
+        <select className="filter-select" disabled><option>Route state: All</option></select>
+        <select className="filter-select" disabled><option>Mountain: All</option></select>
+        <select className="filter-select" disabled><option>Updated: All time</option></select>
         <div className="filter-spacer" />
-        <button className="btn btn-ghost" type="button">↓ Export</button>
+        <button className="btn btn-ghost" type="button" disabled>↓ Export</button>
       </div>
 
       <div className="route-layout">
@@ -80,6 +82,7 @@ export function RoutesPage() {
             <thead>
               <tr>
                 <th>Mountain</th>
+                <th>Route</th>
                 <th>State</th>
                 <th>Confidence</th>
                 <th>Sessions</th>
@@ -90,18 +93,26 @@ export function RoutesPage() {
             <tbody>
               {rows.map((row) => (
                 <tr
-                  className={row.mountainId === selectedMountainId ? 'selected-row' : ''}
-                  key={row.mountainId}
+                  className={row.routeId === selectedRouteId ? 'selected-row' : ''}
+                  key={row.routeId ?? row.mountainId}
                 >
                   <td>
-                    <button
-                      className="link-button"
-                      onClick={() => setSelectedMountainId(row.mountainId)}
-                      type="button"
-                    >
-                      <span className="cell-name">{row.displayName}</span>
-                      <span className="cell-sub">{row.mountainId}</span>
-                    </button>
+                    <span className="cell-name">{row.mountainDisplayName}</span>
+                    <span className="cell-sub">{row.mountainId}</span>
+                  </td>
+                  <td>
+                    {row.routeId !== null ? (
+                      <button
+                        className="link-button"
+                        onClick={() => setSelectedRouteId(row.routeId)}
+                        type="button"
+                      >
+                        <span className="cell-name">{row.routeDisplayName}</span>
+                        <span className="cell-sub">{row.routeId}</span>
+                      </button>
+                    ) : (
+                      <span className="cell-sub">—</span>
+                    )}
                   </td>
                   <td><RouteBadge state={row.routeState} /></td>
                   <td>{formatScore(row.confidence)}</td>
@@ -117,9 +128,11 @@ export function RoutesPage() {
         <div className="route-detail-panel">
           <div className="card">
             <div className="card-title">
-              {detail ? `Route detail — ${detail.displayName}` : 'Select a mountain'}
+              {detail && detail.routeId !== null
+                ? `${detail.mountainDisplayName} — ${detail.routeDisplayName ?? detail.routeId}`
+                : 'Select a route'}
             </div>
-            {detail ? (
+            {detail && detail.routeId !== null ? (
               <>
                 <div className="route-detail-metrics">
                   <div className="route-metric">
@@ -156,7 +169,7 @@ export function RoutesPage() {
             ) : (
               <div className="route-map-empty">
                 <strong>No route selected</strong>
-                <span>Select a mountain to inspect route geometry.</span>
+                <span>Select a route to inspect geometry and metrics.</span>
               </div>
             )}
           </div>
@@ -180,10 +193,10 @@ export function RoutesPage() {
           <div className="card">
             <div className="card-title">About this page</div>
             <ul className="bullet-list">
-              <li>Route applies by mountain</li>
+              <li>Multiple routes per mountain</li>
               <li>Confidence inputs below</li>
               <li>Ambiguous branch review</li>
-              <li>Snap thresholds</li>
+              <li>Snap thresholds per route</li>
             </ul>
           </div>
         </div>
