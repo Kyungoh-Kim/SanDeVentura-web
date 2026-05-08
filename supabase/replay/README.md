@@ -60,3 +60,42 @@ flutter run --dart-define=SUPABASE_FUNCTIONS_URL=http://10.0.2.2:54321/functions
 ```
 
 Use `adb reverse` only for a physical device or explicit localhost workflow.
+
+## Sprint 9 Demo Mountain Seed
+
+Use this seed when you want the mobile app's default `beta-mountain` and the
+operator web to show a realistic route in the requested Sejong-area bounds:
+
+- start area: `36.4942, 127.3079`
+- end area: `36.4864, 127.3192`
+- seeded route: `36.4938, 127.3082` to `36.4868, 127.3188`
+
+Apply it after local migrations are up:
+
+```powershell
+Get-Content -Raw .\supabase\replay\sprint9_demo_mountain_seed.sql |
+  docker exec -i supabase_db_sandeventura-local psql -U postgres -d postgres
+```
+
+Expected seeded values:
+
+- mountain: `beta-mountain` / `Sejong Demo Ridge`
+- route state: `recommended`
+- canonical route version: `100`
+- accepted points: `28`
+- rejected points: `3`
+- operator events: `2 trail_served`, `2 snap_requested`
+
+Operator web live data needs `web/.env.local` with local Supabase values:
+
+```text
+VITE_SUPABASE_URL=http://127.0.0.1:54321
+VITE_SUPABASE_ANON_KEY=<local anon key from npx supabase status -o env>
+```
+
+Mobile emulator testing can use:
+
+```powershell
+cd ..\..\mobile
+flutter run --dart-define-from-file=.env.local.json
+```
