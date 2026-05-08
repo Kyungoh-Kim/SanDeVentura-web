@@ -19,6 +19,16 @@ export type OperatorRouteCoverage = {
   gpsQualityScore: number | null;
 };
 
+export type GeoJsonLineString = {
+  type: 'LineString';
+  coordinates: Array<[number, number]>;
+};
+
+export type OperatorRouteDetail = OperatorRouteCoverage & {
+  updatedAt: string | null;
+  trailGeoJson: GeoJsonLineString | null;
+};
+
 export type OperatorSessionIngestion = {
   sessionId: string;
   mountainId: string;
@@ -36,7 +46,7 @@ export const operatorOverviewMetrics: OperatorOverviewMetrics = {
   snapRequests: 18,
 };
 
-export const routeCoverageRows: OperatorRouteCoverage[] = [
+export const routeCoverageRows: OperatorRouteDetail[] = [
   {
     mountainId: 'beta-mountain',
     displayName: 'Beta Mountain',
@@ -46,6 +56,16 @@ export const routeCoverageRows: OperatorRouteCoverage[] = [
     sessionCount: 4,
     branchAmbiguityScore: 0.08,
     gpsQualityScore: 0.91,
+    updatedAt: '2026-05-08T02:00:00Z',
+    trailGeoJson: {
+      type: 'LineString',
+      coordinates: [
+        [127.0000, 37.5000],
+        [127.0006, 37.5006],
+        [127.0012, 37.5012],
+        [127.0018, 37.5018],
+      ],
+    },
   },
   {
     mountainId: 'branch-test-mountain',
@@ -56,6 +76,15 @@ export const routeCoverageRows: OperatorRouteCoverage[] = [
     sessionCount: 2,
     branchAmbiguityScore: 0.42,
     gpsQualityScore: 0.84,
+    updatedAt: '2026-05-08T01:00:00Z',
+    trailGeoJson: {
+      type: 'LineString',
+      coordinates: [
+        [127.0100, 37.5100],
+        [127.0105, 37.5104],
+        [127.0110, 37.5108],
+      ],
+    },
   },
   {
     mountainId: 'empty-beta-mountain',
@@ -66,8 +95,10 @@ export const routeCoverageRows: OperatorRouteCoverage[] = [
     sessionCount: 0,
     branchAmbiguityScore: null,
     gpsQualityScore: null,
+    updatedAt: null,
+    trailGeoJson: null,
   },
-];
+] satisfies OperatorRouteDetail[];
 
 export const sessionIngestionRows: OperatorSessionIngestion[] = [
   {

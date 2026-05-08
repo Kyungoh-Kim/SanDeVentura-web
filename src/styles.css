@@ -88,6 +88,24 @@ h3 {
   padding: 16px;
 }
 
+.notice {
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 12px 16px;
+}
+
+.notice span {
+  color: #60706a;
+}
+
+.notice.error {
+  background: #fff1ee;
+  border-color: #e7b6aa;
+  color: #8a3c2f;
+}
+
 .metric-card {
   display: grid;
   gap: 8px;
@@ -123,6 +141,27 @@ td span {
   font-size: 12px;
 }
 
+.selected-row {
+  background: #f3f7f1;
+}
+
+.link-button {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 2px;
+  padding: 0;
+  text-align: left;
+}
+
+.link-button:hover strong {
+  text-decoration: underline;
+}
+
 .status-badge {
   border-radius: 999px;
   display: inline-block;
@@ -156,6 +195,85 @@ td span {
   padding-left: 20px;
 }
 
+.route-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+}
+
+.route-detail-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.route-detail-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.route-metric {
+  border: 1px solid #e6ebe4;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.route-metric span {
+  color: #60706a;
+  font-size: 12px;
+}
+
+.route-metric strong {
+  font-size: 14px;
+  text-transform: capitalize;
+}
+
+.route-map-shell,
+.route-map,
+.route-map-empty {
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  min-height: 320px;
+  overflow: hidden;
+}
+
+.route-map-shell {
+  position: relative;
+}
+
+.route-map {
+  border: 0;
+  border-radius: 0;
+  height: 320px;
+}
+
+.map-attribution {
+  background: rgb(255 255 255 / 85%);
+  bottom: 8px;
+  color: #42514b;
+  font-size: 11px;
+  left: 8px;
+  padding: 3px 6px;
+  position: absolute;
+}
+
+.route-map-empty {
+  align-content: center;
+  background: #f7f8f4;
+  color: #60706a;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  padding: 24px;
+  text-align: center;
+}
+
+.route-map-empty strong {
+  color: #1f2933;
+}
+
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -167,6 +285,14 @@ td span {
   }
 
   .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .route-detail-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
