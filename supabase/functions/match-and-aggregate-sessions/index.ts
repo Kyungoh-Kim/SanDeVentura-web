@@ -110,6 +110,7 @@ async function processSession(
 
   const routeGroups = new Map<string, TrailCell[]>();
   const orphanCells: TrailCell[] = [];
+  let orphanCellsAdded = 0;
 
   for (const cell of cells) {
     const matchedRouteId = findNearestRouteCell(cell, storedCells) ??
