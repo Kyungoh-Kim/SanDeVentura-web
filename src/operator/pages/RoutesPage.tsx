@@ -24,45 +24,23 @@ export function RoutesPage() {
     let cancelled = false;
     fetchRouteCoverage()
       .then((nextRows) => {
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
         setRows(nextRows);
         setSelectedMountainId((current) => current ?? nextRows[0]?.mountainId ?? null);
       })
       .catch((nextError: Error) => {
-        if (!cancelled) {
-          setError(nextError.message);
-        }
+        if (!cancelled) setError(nextError.message);
       });
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (selectedMountainId === null) {
-      setSelectedDetail(null);
-      return undefined;
-    }
-
+    if (selectedMountainId === null) { setSelectedDetail(null); return undefined; }
     let cancelled = false;
     fetchRouteDetail(selectedMountainId)
-      .then((detail) => {
-        if (!cancelled) {
-          setSelectedDetail(detail);
-        }
-      })
-      .catch((nextError: Error) => {
-        if (!cancelled) {
-          setError(nextError.message);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
+      .then((detail) => { if (!cancelled) setSelectedDetail(detail); })
+      .catch((nextError: Error) => { if (!cancelled) setError(nextError.message); });
+    return () => { cancelled = true; };
   }, [selectedMountainId]);
 
   const selectedRow = useMemo(
@@ -73,19 +51,31 @@ export function RoutesPage() {
 
   return (
     <>
-      <header>
-        <p className="eyebrow">Canonical trails</p>
+      <div className="page-header">
         <h2>Routes</h2>
-      </header>
+        <span className="page-badge">Operator only</span>
+      </div>
+
       {error && (
         <div className="notice error">
           <strong>Route data unavailable</strong>
           <span>{error}</span>
         </div>
       )}
+
+      <div className="filter-row">
+        <select className="filter-select"><option>Route state: All</option></select>
+        <select className="filter-select"><option>Mountain: All</option></select>
+        <select className="filter-select"><option>Updated: All time</option></select>
+        <div className="filter-spacer" />
+        <button className="btn btn-ghost" type="button">↓ Export</button>
+      </div>
+
       <div className="route-layout">
         <div className="table-panel">
-          <h3>Route coverage</h3>
+          <div className="table-panel-header">
+            <span className="table-panel-title">Route coverage</span>
+          </div>
           <table>
             <thead>
               <tr>
@@ -109,13 +99,11 @@ export function RoutesPage() {
                       onClick={() => setSelectedMountainId(row.mountainId)}
                       type="button"
                     >
-                      <strong>{row.displayName}</strong>
-                      <span>{row.mountainId}</span>
+                      <span className="cell-name">{row.displayName}</span>
+                      <span className="cell-sub">{row.mountainId}</span>
                     </button>
                   </td>
-                  <td>
-                    <RouteBadge state={row.routeState} />
-                  </td>
+                  <td><RouteBadge state={row.routeState} /></td>
                   <td>{formatScore(row.confidence)}</td>
                   <td>{row.sessionCount}</td>
                   <td>{formatScore(row.branchAmbiguityScore)}</td>
@@ -125,44 +113,80 @@ export function RoutesPage() {
             </tbody>
           </table>
         </div>
-        <div className="panel route-detail-panel">
-          <div>
-            <p className="eyebrow">Selected route</p>
-            <h3>{detail?.displayName ?? 'No mountain selected'}</h3>
-          </div>
-          {detail ? (
-            <>
-              <div className="route-detail-metrics">
-                <Metric label="State" value={detail.routeState} />
-                <Metric label="Version" value={detail.version?.toString() ?? '-'} />
-                <Metric label="Confidence" value={formatScore(detail.confidence)} />
-                <Metric label="Sessions" value={detail.sessionCount.toString()} />
-              </div>
-              <Suspense
-                fallback={
-                  <div className="route-map-empty">
-                    <strong>Loading map</strong>
-                    <span>Preparing route preview.</span>
-                  </div>
-                }
-              >
-                <OperatorRouteMap
-                  geometry={routeGeometry(detail)}
-                  routeState={detail.routeState}
-                />
-              </Suspense>
-            </>
-          ) : (
-            <div className="route-map-empty">
-              <strong>No route selected</strong>
-              <span>Select a mountain to inspect route geometry.</span>
+
+        <div className="route-detail-panel">
+          <div className="card">
+            <div className="card-title">
+              {detail ? `Route detail — ${detail.displayName}` : 'Select a mountain'}
             </div>
-          )}
+            {detail ? (
+              <>
+                <div className="route-detail-metrics">
+                  <div className="route-metric">
+                    <span>State</span>
+                    <strong>{detail.routeState}</strong>
+                  </div>
+                  <div className="route-metric">
+                    <span>Version</span>
+                    <strong>{detail.version?.toString() ?? '-'}</strong>
+                  </div>
+                  <div className="route-metric">
+                    <span>Confidence</span>
+                    <strong>{formatScore(detail.confidence)}</strong>
+                  </div>
+                  <div className="route-metric">
+                    <span>Sessions</span>
+                    <strong>{detail.sessionCount}</strong>
+                  </div>
+                </div>
+                <Suspense
+                  fallback={
+                    <div className="route-map-empty">
+                      <strong>Loading map</strong>
+                      <span>Preparing route preview.</span>
+                    </div>
+                  }
+                >
+                  <OperatorRouteMap
+                    geometry={routeGeometry(detail)}
+                    routeState={detail.routeState}
+                  />
+                </Suspense>
+              </>
+            ) : (
+              <div className="route-map-empty">
+                <strong>No route selected</strong>
+                <span>Select a mountain to inspect route geometry.</span>
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-title">Snap thresholds</div>
+            <div className="threshold-item">
+              <span className="threshold-dot" style={{ background: '#1f8f5f' }} />
+              <span>On route — ≤ 25 m</span>
+            </div>
+            <div className="threshold-item">
+              <span className="threshold-dot" style={{ background: '#c47800' }} />
+              <span>Caution — 26–50 m</span>
+            </div>
+            <div className="threshold-item">
+              <span className="threshold-dot" style={{ background: '#8a3c2f' }} />
+              <span>Away — &gt; 50 m</span>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-title">About this page</div>
+            <ul className="bullet-list">
+              <li>Route applies by mountain</li>
+              <li>Confidence inputs below</li>
+              <li>Ambiguous branch review</li>
+              <li>Snap thresholds</li>
+            </ul>
+          </div>
         </div>
-      </div>
-      <div className="panel">
-        <h3>Snap thresholds</h3>
-        <p>On &lt;=25 m, caution 26-50 m, away &gt;50 m.</p>
       </div>
     </>
   );
@@ -172,19 +196,8 @@ function RouteBadge({ state }: { state: RouteState }) {
   return <span className={`status-badge ${state}`}>{state.replaceAll('_', ' ')}</span>;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="route-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 function formatScore(value: number | null) {
-  if (value === null) {
-    return '-';
-  }
+  if (value === null) return '-';
   return value.toFixed(2);
 }
 
