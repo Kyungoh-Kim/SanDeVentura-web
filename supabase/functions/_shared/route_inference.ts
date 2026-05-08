@@ -1,3 +1,5 @@
+import { latLngToCell } from 'npm:h3-js';
+
 export type RoutePoint = {
   sessionId: string;
   recordedAt: string;
@@ -33,6 +35,7 @@ export type RouteQualityInputs = {
   rejectedPointCount?: number;
   latestEvidenceAt?: string | null;
   now?: Date;
+  sessionCount?: number;
 };
 
 export type CanonicalRoute = {
@@ -64,7 +67,7 @@ type Component = {
   score: number;
 };
 
-const cellSizeDegrees = 0.00025;
+export const H3_RESOLUTION = 11;
 const minCellPointCount = 2;
 const minCellSessionCount = 1;
 const minTransitionCount = 1;
@@ -189,11 +192,155 @@ export function inferCanonicalRoute(
   });
 }
 
+// Build a single-session hitmap from raw GPS points.
+// Returns public types suitable for accumulation into trail_cells / trail_cell_transitions.
+export function buildSessionHitmap(
+  points: RoutePoint[],
+): { cells: TrailCell[]; transitions: TrailTransition[] } {
+  if (points.length === 0) {
+    return { cells: [], transitions: [] };
+  }
+  const sessions = groupBySession(points);
+  const rawCells = buildCells(sessions);
+  const rawTransitions = buildTransitions(sessions);
+  return {
+    cells: [...rawCells.values()].map(publicCell),
+    transitions: [...rawTransitions.values()].map(publicTransition),
+  };
+}
+
+// Infer a canonical route from pre-accumulated cells and transitions (e.g. from trail_cells DB table).
+// Use inputs.sessionCount for accurate session count when available;
+// otherwise falls back to the max sessionCount observed across cells.
+export function inferCanonicalRouteFromCells(
+  rawCells: TrailCell[],
+  rawTransitions: TrailTransition[],
+  inputs: RouteQualityInputs = {},
+): CanonicalRoute {
+  if (rawCells.length === 0) {
+    return emptyRoute();
+  }
+
+  const supportedCells = new Map(
+    rawCells
+      .filter((cell) =>
+        cell.pointCount >= minCellPointCount &&
+        cell.sessionCount >= minCellSessionCount
+      )
+      .map((cell) => [cell.cellKey, cellToSupport(cell)]),
+  );
+  const supportedTransitions = rawTransitions
+    .filter((transition) =>
+      supportedCells.has(transition.fromCellKey) &&
+      supportedCells.has(transition.toCellKey) &&
+      transition.transitionCount >= minTransitionCount &&
+      transition.sessionCount >= minTransitionSessionCount
+    )
+    .map(transitionToSupport);
+
+  const cells = pruneIsolatedCells(supportedCells, supportedTransitions);
+  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
+  const transitions = supportedTransitions.filter((transition) =>
+    cellByKey.has(transition.fromCellKey) && cellByKey.has(transition.toCellKey)
+  );
+
+  // Session count: prefer explicit override (from session_route_assignments count),
+  // fall back to the max cell session count as a conservative estimate.
+  const resolvedSessionCount = inputs.sessionCount ??
+    Math.max(0, ...cells.map((c) => c.sessionCount));
+  const totalPointCount = sum(cells.map((c) => c.pointCount));
+  const latestAt = latestCellAt(rawCells);
+
+  const component = selectBestComponent(cells, transitions);
+  if (component === null) {
+    return routeFromScores({
+      cells: cells.map(publicCell),
+      transitions: transitions.map(publicTransition),
+      line: [],
+      confidence: 0,
+      confidenceLevel: 'none',
+      sessionCount: resolvedSessionCount,
+      branchAmbiguityScore: 0,
+      gpsQualityScore: scoreGpsQuality(cells),
+      transitionConsistencyScore: 0,
+      rejectedPointRate: rejectedPointRate(totalPointCount, inputs),
+      recencyScore: recencyScore(latestAt, inputs.now),
+    });
+  }
+
+  const selected = selectPath(component);
+  const line = selected.cellKeys
+    .map((cellKey) => cellByKey.get(cellKey))
+    .filter((cell): cell is CellSupport => cell !== undefined)
+    .map((cell) => ({ lat: cell.lat, lon: cell.lon }));
+
+  if (line.length < 2) {
+    return routeFromScores({
+      cells: cells.map(publicCell),
+      transitions: transitions.map(publicTransition),
+      line: [],
+      confidence: 0,
+      confidenceLevel: 'none',
+      sessionCount: resolvedSessionCount,
+      branchAmbiguityScore: 0,
+      gpsQualityScore: scoreGpsQuality(cells),
+      transitionConsistencyScore: 0,
+      rejectedPointRate: rejectedPointRate(totalPointCount, inputs),
+      recencyScore: recencyScore(latestAt, inputs.now),
+    });
+  }
+
+  const branchAmbiguityScore = branchAmbiguity(component.transitions);
+  const gpsQualityScore = scoreGpsQuality(component.cells);
+  const transitionConsistencyScore = transitionConsistency(
+    component.transitions,
+    selected.edgeKeys,
+  );
+  const rejectedRate = rejectedPointRate(totalPointCount, inputs);
+  const recency = recencyScore(latestAt, inputs.now);
+  const sessionSupportScore = Math.min(1, resolvedSessionCount / recommendedSessionCount);
+  const confidence = clamp(
+    sessionSupportScore * 0.35 +
+      gpsQualityScore * 0.20 +
+      transitionConsistencyScore * 0.15 +
+      (1 - branchAmbiguityScore) * 0.15 +
+      (1 - rejectedRate) * 0.10 +
+      recency * 0.05,
+  );
+
+  return routeFromScores({
+    cells: component.cells.map(publicCell),
+    transitions: component.transitions.map(publicTransition),
+    line,
+    confidence,
+    confidenceLevel: isRecommended({
+      confidence,
+      sessionCount: resolvedSessionCount,
+      branchAmbiguityScore,
+      gpsQualityScore,
+      rejectedPointRate: rejectedRate,
+      recencyScore: recency,
+    })
+      ? 'recommended'
+      : 'reference',
+    sessionCount: resolvedSessionCount,
+    branchAmbiguityScore,
+    gpsQualityScore,
+    transitionConsistencyScore,
+    rejectedPointRate: rejectedRate,
+    recencyScore: recency,
+  });
+}
+
 export function lineStringWkt(line: Array<{ lat: number; lon: number }>): string | null {
   if (line.length < 2) {
     return null;
   }
   return `LINESTRING(${line.map((point) => `${point.lon} ${point.lat}`).join(',')})`;
+}
+
+export function pointToCellKey(lat: number, lon: number): string {
+  return latLngToCell(lat, lon, H3_RESOLUTION);
 }
 
 function buildCells(sessions: Map<string, RoutePoint[]>): Map<string, CellSupport> {
@@ -317,8 +464,21 @@ function groupBySession(points: RoutePoint[]): Map<string, RoutePoint[]> {
   return sessions;
 }
 
-function pointToCellKey(lat: number, lon: number): string {
-  return `${Math.round(lat / cellSizeDegrees)}:${Math.round(lon / cellSizeDegrees)}`;
+// Adapt a public TrailCell (no sessionIds) to CellSupport for use in the path algorithm.
+// Uses a dummy placeholder session ID so selectBestComponent produces a non-zero session count;
+// the caller is responsible for using resolvedSessionCount from inputs rather than component.sessionCount.
+function cellToSupport(cell: TrailCell): CellSupport {
+  return { ...cell, sessionIds: new Set(['__accumulated__']) };
+}
+
+function transitionToSupport(transition: TrailTransition): TransitionSupport {
+  return { ...transition, sessionIds: new Set(['__accumulated__']) };
+}
+
+function latestCellAt(cells: TrailCell[]): string | null {
+  return cells
+    .map((c) => c.lastSeenAt)
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
 }
 
 function pruneIsolatedCells(
