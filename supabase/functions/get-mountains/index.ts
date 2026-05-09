@@ -23,11 +23,11 @@ export async function handleGetMountains(request: Request): Promise<Response> {
     return jsonResponse({ success: false, errors: [mountainsResult.error.message] }, 500);
   }
 
-  const primaryRouteByMountain = new Map<string, string>();
+  const routesByMountain = new Map<string, string[]>();
   for (const r of routesResult.data ?? []) {
-    if (!primaryRouteByMountain.has(r.mountain_id)) {
-      primaryRouteByMountain.set(r.mountain_id, r.id);
-    }
+    const existing = routesByMountain.get(r.mountain_id) ?? [];
+    existing.push(r.id);
+    routesByMountain.set(r.mountain_id, existing);
   }
 
   return jsonResponse({
@@ -35,7 +35,7 @@ export async function handleGetMountains(request: Request): Promise<Response> {
     mountains: (mountainsResult.data ?? []).map((row: { id: string; display_name: string }) => ({
       id: row.id,
       displayName: row.display_name,
-      primaryRouteId: primaryRouteByMountain.get(row.id) ?? null,
+      routeIds: routesByMountain.get(row.id) ?? [],
     })),
   });
 }
