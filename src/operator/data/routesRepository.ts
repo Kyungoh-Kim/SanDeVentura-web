@@ -214,6 +214,15 @@ export async function fetchSessionIngestion(): Promise<OperatorSessionIngestion[
   }));
 }
 
+export async function renameRoute(routeId: string, displayName: string): Promise<void> {
+  if (!supabase) throw new Error('Supabase client not configured');
+  const { error } = await supabase
+    .from('routes')
+    .update({ display_name: displayName })
+    .eq('id', routeId);
+  if (error) throw new Error(error.message);
+}
+
 function coverageFromRow(row: CoverageRow): OperatorRouteCoverage {
   return {
     routeId: row.route_id,

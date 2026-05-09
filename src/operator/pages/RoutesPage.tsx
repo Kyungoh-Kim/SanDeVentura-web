@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
-import { fetchRouteCoverage, fetchRouteDetail } from '../data/routesRepository';
+import { fetchRouteCoverage, fetchRouteDetail, renameRoute } from '../data/routesRepository';
 import type {
   GeoJsonLineString,
   OperatorRouteCoverage,
@@ -26,6 +26,10 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
   const [mountainFilter, setMountainFilter] = useState<string>('all');
   const [stateFilter, setStateFilter] = useState<string>('all');
   const [mapExpanded, setMapExpanded] = useState(false);
+  const [renamingRouteId, setRenamingRouteId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +55,33 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
       .catch((nextError: Error) => { if (!cancelled) setError(nextError.message); });
     return () => { cancelled = true; };
   }, [selectedRouteId]);
+
+  useEffect(() => {
+    if (renamingRouteId !== null) {
+      const row = rows.find((r) => r.routeId === renamingRouteId);
+      setRenameValue(row?.routeDisplayName ?? '');
+      setTimeout(() => renameInputRef.current?.focus(), 50);
+    }
+  }, [renamingRouteId]);
+
+  async function handleRename() {
+    if (!renamingRouteId || renameValue.trim() === '') return;
+    const targetId = renamingRouteId;
+    const newName = renameValue.trim();
+    setRenamingRouteId(null);
+    setRenameError(null);
+    try {
+      await renameRoute(targetId, newName);
+      setRows((prev) =>
+        prev.map((r) => r.routeId === targetId ? { ...r, routeDisplayName: newName } : r),
+      );
+      setSelectedDetail((prev) =>
+        prev && prev.routeId === targetId ? { ...prev, routeDisplayName: newName } : prev,
+      );
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   const mountains = useMemo(() => {
     const seen = new Map<string, string>();
@@ -83,6 +114,12 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
         <div className="notice error">
           <strong>Route data unavailable</strong>
           <span>{error}</span>
+        </div>
+      )}
+      {renameError && (
+        <div className="notice error">
+          <strong>Rename failed</strong>
+          <span>{renameError}</span>
         </div>
       )}
 
@@ -175,15 +212,26 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
                   : 'Select a route'}
               </div>
               {detail && detail.routeId !== null && (
-                <button
-                  className="btn btn-ghost"
-                  type="button"
-                  title="지도 확대"
-                  onClick={() => setMapExpanded(true)}
-                  style={{ fontSize: 15, padding: '3px 8px', lineHeight: 1 }}
-                >
-                  ⤢
-                </button>
+                <>
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
+                    title="루트 이름 변경"
+                    onClick={() => setRenamingRouteId(detail.routeId)}
+                    style={{ fontSize: 14, padding: '3px 8px', lineHeight: 1 }}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
+                    title="지도 확대"
+                    onClick={() => setMapExpanded(true)}
+                    style={{ fontSize: 15, padding: '3px 8px', lineHeight: 1 }}
+                  >
+                    ⤢
+                  </button>
+                </>
               )}
             </div>
             {detail && detail.routeId !== null ? (
@@ -220,6 +268,18 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
         </div>
       </div>
 
+      {renamingRouteId !== null && (
+        <RenameModal
+          routeId={renamingRouteId}
+          currentName={rows.find((r) => r.routeId === renamingRouteId)?.routeDisplayName ?? null}
+          value={renameValue}
+          inputRef={renameInputRef}
+          onChange={setRenameValue}
+          onConfirm={handleRename}
+          onCancel={() => setRenamingRouteId(null)}
+        />
+      )}
+
       {mapExpanded && detail && detail.routeId !== null && (
         <div className="modal-backdrop" onClick={() => setMapExpanded(false)}>
           <div
@@ -247,6 +307,62 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
         </div>
       )}
     </>
+  );
+}
+
+function RenameModal({
+  routeId,
+  currentName,
+  value,
+  inputRef,
+  onChange,
+  onConfirm,
+  onCancel,
+}: {
+  routeId: string;
+  currentName: string | null;
+  value: string;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  onChange: (v: string) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter' && value.trim() !== '' && value.trim() !== currentName) onConfirm();
+    if (e.key === 'Escape') onCancel();
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3 className="modal-title">루트 이름 변경</h3>
+        <p className="modal-body">
+          Route ID: <strong>{routeId}</strong>
+        </p>
+        <label className="modal-label">
+          새 이름
+          <input
+            ref={inputRef}
+            className="modal-input"
+            type="text"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={onKeyDown}
+            maxLength={80}
+          />
+        </label>
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onCancel}>취소</button>
+          <button
+            className="btn btn-primary"
+            onClick={onConfirm}
+            disabled={value.trim() === '' || value.trim() === currentName}
+          >
+            저장
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
