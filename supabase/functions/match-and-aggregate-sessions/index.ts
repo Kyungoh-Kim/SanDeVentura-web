@@ -127,11 +127,20 @@ async function processSession(
     }
   }
 
+  const cellKeyToRouteId = new Map<string, string>();
   for (const [routeId, routeCells] of routeGroups) {
-    const routeTransitions = filterTransitionsForCells(transitions, routeCells);
+    for (const cell of routeCells) {
+      cellKeyToRouteId.set(cell.cellKey, routeId);
+    }
+  }
+
+  const classified = classifyTransitions(transitions, cellKeyToRouteId);
+
+  for (const [routeId, routeCells] of routeGroups) {
+    const routeTransitions = classified.routeInternal.get(routeId) ?? [];
     const [cellError, transitionError] = await Promise.all([
-      accumulateTrailCells(supabase, routeId, routeCells),
-      accumulateTrailTransitions(supabase, routeId, routeTransitions),
+      accumulateTrailCells(supabase, routeId, sessionId, routeCells),
+      accumulateTrailTransitions(supabase, routeId, sessionId, routeTransitions),
     ]);
     if (cellError) return { affectedRouteIds: [], orphanCellsAdded: 0, error: cellError };
     if (transitionError) return { affectedRouteIds: [], orphanCellsAdded: 0, error: transitionError };
@@ -141,6 +150,21 @@ async function processSession(
   if (orphanCells.length > 0) {
     const added = await saveCandidateCells(supabase, mountainId, sessionId, orphanCells);
     orphanCellsAdded += added;
+  }
+
+  if (classified.candidateInternal.length > 0) {
+    await saveCandidateTransitions(supabase, mountainId, sessionId, classified.candidateInternal);
+  }
+
+  for (const [routeId, crossTransitions] of classified.routeToCandidate) {
+    await saveRouteToCandidateTransitions(
+      supabase, mountainId, routeId, sessionId, 'route_to_candidate', crossTransitions,
+    );
+  }
+  for (const [routeId, crossTransitions] of classified.candidateToRoute) {
+    await saveRouteToCandidateTransitions(
+      supabase, mountainId, routeId, sessionId, 'candidate_to_route', crossTransitions,
+    );
   }
 
   if (routeGroups.size === 0) {
@@ -266,11 +290,13 @@ function parseBbox(bbox: string): BoundingBox | null {
 async function accumulateTrailCells(
   supabase: SupabaseClient,
   routeId: string,
+  sessionId: string,
   cells: TrailCell[],
 ): Promise<string | null> {
   if (cells.length === 0) return null;
   const { error } = await supabase.rpc('accumulate_trail_cells', {
     p_route_id: routeId,
+    p_session_id: sessionId,
     p_cells: cells.map((c) => ({
       cellKey: c.cellKey,
       lat: c.lat,
@@ -288,11 +314,13 @@ async function accumulateTrailCells(
 async function accumulateTrailTransitions(
   supabase: SupabaseClient,
   routeId: string,
+  sessionId: string,
   transitions: TrailTransition[],
 ): Promise<string | null> {
   if (transitions.length === 0) return null;
   const { error } = await supabase.rpc('accumulate_trail_transitions', {
     p_route_id: routeId,
+    p_session_id: sessionId,
     p_transitions: transitions.map((t) => ({
       fromCellKey: t.fromCellKey,
       toCellKey: t.toCellKey,
@@ -300,6 +328,46 @@ async function accumulateTrailTransitions(
     })),
   });
   return error ? error.message : null;
+}
+
+async function saveCandidateTransitions(
+  supabase: SupabaseClient,
+  mountainId: string,
+  sessionId: string,
+  transitions: TrailTransition[],
+): Promise<void> {
+  if (transitions.length === 0) return;
+  await supabase.rpc('accumulate_candidate_transitions', {
+    p_mountain_id: mountainId,
+    p_session_id: sessionId,
+    p_transitions: transitions.map((t) => ({
+      fromCellKey: t.fromCellKey,
+      toCellKey: t.toCellKey,
+      transitionCount: t.transitionCount,
+    })),
+  });
+}
+
+async function saveRouteToCandidateTransitions(
+  supabase: SupabaseClient,
+  mountainId: string,
+  routeId: string,
+  sessionId: string,
+  direction: 'route_to_candidate' | 'candidate_to_route',
+  transitions: TrailTransition[],
+): Promise<void> {
+  if (transitions.length === 0) return;
+  await supabase.rpc('accumulate_route_to_candidate_transitions', {
+    p_mountain_id: mountainId,
+    p_route_id: routeId,
+    p_session_id: sessionId,
+    p_direction: direction,
+    p_transitions: transitions.map((t) => ({
+      fromCellKey: t.fromCellKey,
+      toCellKey: t.toCellKey,
+      transitionCount: t.transitionCount,
+    })),
+  });
 }
 
 async function saveCandidateCells(
@@ -429,14 +497,45 @@ async function recomputeRouteConfidence(
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-function filterTransitionsForCells(
+type ClassifiedTransitions = {
+  routeInternal: Map<string, TrailTransition[]>;
+  candidateInternal: TrailTransition[];
+  routeToCandidate: Map<string, TrailTransition[]>;
+  candidateToRoute: Map<string, TrailTransition[]>;
+};
+
+function classifyTransitions(
   transitions: TrailTransition[],
-  cells: TrailCell[],
-): TrailTransition[] {
-  const cellKeys = new Set(cells.map((c) => c.cellKey));
-  return transitions.filter(
-    (t) => cellKeys.has(t.fromCellKey) && cellKeys.has(t.toCellKey),
-  );
+  cellKeyToRouteId: Map<string, string>,
+): ClassifiedTransitions {
+  const routeInternal = new Map<string, TrailTransition[]>();
+  const candidateInternal: TrailTransition[] = [];
+  const routeToCandidate = new Map<string, TrailTransition[]>();
+  const candidateToRoute = new Map<string, TrailTransition[]>();
+
+  for (const t of transitions) {
+    const fromRoute = cellKeyToRouteId.get(t.fromCellKey) ?? null;
+    const toRoute = cellKeyToRouteId.get(t.toCellKey) ?? null;
+
+    if (fromRoute !== null && toRoute !== null && fromRoute === toRoute) {
+      const list = routeInternal.get(fromRoute) ?? [];
+      list.push(t);
+      routeInternal.set(fromRoute, list);
+    } else if (fromRoute === null && toRoute === null) {
+      candidateInternal.push(t);
+    } else if (fromRoute !== null && toRoute === null) {
+      const list = routeToCandidate.get(fromRoute) ?? [];
+      list.push(t);
+      routeToCandidate.set(fromRoute, list);
+    } else if (fromRoute === null && toRoute !== null) {
+      const list = candidateToRoute.get(toRoute) ?? [];
+      list.push(t);
+      candidateToRoute.set(toRoute, list);
+    }
+    // cross-route transitions (different known routes) are intentionally discarded
+  }
+
+  return { routeInternal, candidateInternal, routeToCandidate, candidateToRoute };
 }
 
 function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
