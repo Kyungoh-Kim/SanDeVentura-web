@@ -2,11 +2,13 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import {
   type CandidateCluster,
+  type EvaluateRouteSplitsResult,
   type PromoteCandidateClusterResult,
   fetchCandidateCells,
   fetchCandidateClusters,
   fetchTrailCells,
   promoteCandidateCluster,
+  triggerEvaluateRouteSplits,
   triggerMatchAndAggregate,
 } from '../data/operationsRepository';
 import { type CandidateCell, type OperatorRouteDetail } from '../data/readModels';
@@ -22,11 +24,22 @@ type PromoteState =
   | { status: 'done'; result: PromoteCandidateClusterResult }
   | { status: 'error'; message: string };
 
+type SplitHint = {
+  originalRouteId: string;
+  cfgConfidence: number;
+  crossBranchRatio: number;
+  valid: boolean;
+  invalidReason?: string;
+};
+
 export function DiscoveryPage() {
   const [clusters, setClusters] = useState<CandidateCluster[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [promote, setPromote] = useState<PromoteState>({ status: 'idle' });
+  const [splitHints, setSplitHints] = useState<Map<string, SplitHint>>(new Map());
+  const [detecting, setDetecting] = useState(false);
+  const [executingSplit, setExecutingSplit] = useState<string | null>(null);
   const [modalMountainId, setModalMountainId] = useState<string | null>(null);
   const [routeName, setRouteName] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -82,6 +95,43 @@ export function DiscoveryPage() {
     [selectedRoutes],
   );
 
+  function applySplitResult(result: EvaluateRouteSplitsResult) {
+    const hints = new Map<string, SplitHint>();
+    for (const plan of result.plans) {
+      hints.set(plan.originalRouteId.split('-')[0] ?? plan.originalRouteId, {
+        originalRouteId: plan.originalRouteId,
+        cfgConfidence: plan.cfgConfidence,
+        crossBranchRatio: plan.crossBranchRatio,
+        valid: plan.valid,
+        invalidReason: plan.invalidReason,
+      });
+    }
+    setSplitHints(hints);
+  }
+
+  async function handleDetectBranches() {
+    setDetecting(true);
+    try {
+      const result = await triggerEvaluateRouteSplits(undefined, true);
+      applySplitResult(result);
+    } catch {
+      // silently ignore — no hint is better than a broken page
+    } finally {
+      setDetecting(false);
+    }
+  }
+
+  async function handleExecuteSplit(mountainId: string) {
+    setExecutingSplit(mountainId);
+    try {
+      await triggerEvaluateRouteSplits(mountainId, false);
+      setSplitHints((prev) => { const next = new Map(prev); next.delete(mountainId); return next; });
+      load();
+    } finally {
+      setExecutingSplit(null);
+    }
+  }
+
   async function handleRefresh() {
     setRefreshing(true);
     setPromote({ status: 'idle' });
@@ -114,9 +164,16 @@ export function DiscoveryPage() {
         <span className="page-badge">Operator only</span>
         <button
           className="btn btn-ghost"
+          onClick={handleDetectBranches}
+          disabled={detecting}
+          style={{ marginLeft: 'auto' }}
+        >
+          {detecting ? 'Detecting…' : 'Detect branches'}
+        </button>
+        <button
+          className="btn btn-ghost"
           onClick={handleRefresh}
           disabled={refreshing}
-          style={{ marginLeft: 'auto' }}
         >
           {refreshing ? 'Scanning…' : 'Scan for candidates'}
         </button>
@@ -175,8 +232,11 @@ export function DiscoveryPage() {
                       cluster={c}
                       selected={selectedMountainId === c.mountainId}
                       promoting={promote.status === 'pending' && promote.mountainId === c.mountainId}
+                      splitHint={splitHints.get(c.mountainId) ?? null}
+                      executingSplit={executingSplit === c.mountainId}
                       onSelect={() => setSelectedMountainId((prev) => prev === c.mountainId ? null : c.mountainId)}
                       onPromote={() => setModalMountainId(c.mountainId)}
+                      onExecuteSplit={() => handleExecuteSplit(c.mountainId)}
                     />
                   ))}
                 </tbody>
@@ -245,14 +305,20 @@ function ClusterRow({
   cluster,
   selected,
   promoting,
+  splitHint,
+  executingSplit,
   onSelect,
   onPromote,
+  onExecuteSplit,
 }: {
   cluster: CandidateCluster;
   selected: boolean;
   promoting: boolean;
+  splitHint: SplitHint | null;
+  executingSplit: boolean;
   onSelect: () => void;
   onPromote: () => void;
+  onExecuteSplit: () => void;
 }) {
   const relativeTime = cluster.latestEvidenceAt
     ? formatRelative(new Date(cluster.latestEvidenceAt))
@@ -264,6 +330,11 @@ function ClusterRow({
         <button className="link-button" type="button" onClick={onSelect}>
           <span className="cell-name">{cluster.mountainId}</span>
         </button>
+        {splitHint && splitHint.valid && (
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--warn)', marginTop: 2 }}>
+            분기 후보 감지 — confidence {splitHint.cfgConfidence.toFixed(2)}, ratio {splitHint.crossBranchRatio.toFixed(2)}
+          </span>
+        )}
       </td>
       <td>
         <span className="cell-mono">{cluster.cellCount}</span>
@@ -272,7 +343,17 @@ function ClusterRow({
         <span className="cell-mono">{cluster.totalSessionContributions}</span>
       </td>
       <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{relativeTime}</td>
-      <td style={{ textAlign: 'right' }}>
+      <td style={{ textAlign: 'right', display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+        {splitHint?.valid && (
+          <button
+            className="btn btn-ghost"
+            onClick={onExecuteSplit}
+            disabled={executingSplit}
+            style={{ fontSize: 12, padding: '5px 10px' }}
+          >
+            {executingSplit ? 'Splitting…' : 'Execute split'}
+          </button>
+        )}
         <button
           className="btn btn-primary"
           onClick={onPromote}

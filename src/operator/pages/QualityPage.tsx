@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { type OperatorRouteQualityDetail } from '../data/readModels';
-import { type MatchAndAggregateResult, triggerMatchAndAggregate } from '../data/operationsRepository';
+import {
+  type EvaluateRouteSplitsResult,
+  type MatchAndAggregateResult,
+  type RouteSplitAuditEntry,
+  fetchRouteSplitAudit,
+  triggerEvaluateRouteSplits,
+  triggerMatchAndAggregate,
+} from '../data/operationsRepository';
 import { fetchRouteQualityDetails } from '../data/routesRepository';
 
 type QualityPageProps = {
@@ -16,6 +23,11 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
   const [recalcResult, setRecalcResult] = useState<MatchAndAggregateResult | null>(null);
   const [recalcError, setRecalcError] = useState<string | null>(null);
 
+  const [auditEntries, setAuditEntries] = useState<RouteSplitAuditEntry[]>([]);
+  const [evaluating, setEvaluating] = useState(false);
+  const [evaluateResult, setEvaluateResult] = useState<EvaluateRouteSplitsResult | null>(null);
+  const [evaluateError, setEvaluateError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     fetchRouteQualityDetails()
@@ -28,8 +40,27 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
         }
       })
       .catch((nextError: Error) => { if (!cancelled) setError(nextError.message); });
+    fetchRouteSplitAudit()
+      .then((entries) => { if (!cancelled) setAuditEntries(entries); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  async function handleEvaluateSplits(dryRun: boolean) {
+    setEvaluating(true);
+    setEvaluateResult(null);
+    setEvaluateError(null);
+    try {
+      const result = await triggerEvaluateRouteSplits(undefined, dryRun);
+      setEvaluateResult(result);
+      const entries = await fetchRouteSplitAudit();
+      setAuditEntries(entries);
+    } catch (err) {
+      setEvaluateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEvaluating(false);
+    }
+  }
 
   async function handleRecalculate() {
     setRecalculating(true);
@@ -205,6 +236,56 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
               </>
             ) : (
               <p style={{ fontSize: 13, color: 'var(--text-3)' }}>행을 선택하세요.</p>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              자동 분할 이력
+              <button
+                className="btn btn-ghost"
+                style={{ fontSize: 11, padding: '2px 8px', marginLeft: 'auto' }}
+                onClick={() => handleEvaluateSplits(true)}
+                disabled={evaluating}
+              >
+                Dry-run
+              </button>
+              <button
+                className="btn btn-primary"
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => handleEvaluateSplits(false)}
+                disabled={evaluating}
+              >
+                {evaluating ? '…' : 'Execute'}
+              </button>
+            </div>
+            {evaluateResult && (
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>
+                {evaluateResult.plansEvaluated === 0
+                  ? '분기 후보 없음.'
+                  : `${evaluateResult.plansEvaluated}개 평가 · ${evaluateResult.plansValid}개 유효 · ${evaluateResult.dryRun ? 'dry-run' : '실행됨'}`}
+              </div>
+            )}
+            {evaluateError && (
+              <div style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 8 }}>{evaluateError}</div>
+            )}
+            {auditEntries.length === 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--text-3)' }}>분할 이력 없음.</p>
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {auditEntries.slice(0, 10).map((entry) => (
+                  <div key={entry.id} style={{ fontSize: 12, borderLeft: '3px solid var(--border)', paddingLeft: 8 }}>
+                    <div style={{ fontWeight: 600, color: entry.dryRun ? 'var(--text-3)' : 'var(--text-1)' }}>
+                      {entry.originalRouteId}
+                      {entry.dryRun && <span style={{ fontWeight: 400, marginLeft: 4 }}>(dry-run)</span>}
+                    </div>
+                    <div style={{ color: 'var(--text-3)' }}>
+                      confidence {entry.cfgConfidence?.toFixed(2) ?? '—'} · ratio {entry.crossBranchRatio?.toFixed(2) ?? '—'} · {entry.affectedSessionCount} sessions
+                    </div>
+                    <div style={{ color: 'var(--text-3)' }}>{new Date(entry.decidedAt).toLocaleString()}</div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 

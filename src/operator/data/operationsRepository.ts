@@ -97,6 +97,82 @@ export async function fetchTrailCells(mountainId: string): Promise<CandidateCell
   }));
 }
 
+export type RouteSplitAuditEntry = {
+  id: string;
+  mountainId: string;
+  originalRouteId: string;
+  branchPointCellKey: string;
+  segmentARouteId: string | null;
+  segmentBRouteId: string | null;
+  branchRouteId: string | null;
+  cfgConfidence: number | null;
+  crossBranchRatio: number | null;
+  affectedSessionCount: number;
+  dryRun: boolean;
+  decidedAt: string;
+};
+
+export type EvaluateRouteSplitsResult = {
+  plansEvaluated: number;
+  plansValid: number;
+  dryRun: boolean;
+  plans: Array<{
+    originalRouteId: string;
+    valid: boolean;
+    invalidReason?: string;
+    cfgConfidence: number;
+    crossBranchRatio: number;
+    newSegmentBRouteId: string;
+    newBranchRouteId: string;
+    affectedSessions: string[];
+  }>;
+};
+
+export async function fetchRouteSplitAudit(limit = 20): Promise<RouteSplitAuditEntry[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('route_split_audit')
+    .select('*')
+    .order('decided_at', { ascending: false })
+    .limit(limit);
+  if (error || !data) return [];
+  return (data as any[]).map((row) => ({
+    id: row.id,
+    mountainId: row.mountain_id,
+    originalRouteId: row.original_route_id,
+    branchPointCellKey: row.branch_point_cell_key,
+    segmentARouteId: row.segment_a_route_id,
+    segmentBRouteId: row.segment_b_route_id,
+    branchRouteId: row.branch_route_id,
+    cfgConfidence: row.cfg_confidence,
+    crossBranchRatio: row.cross_branch_ratio,
+    affectedSessionCount: row.affected_session_count,
+    dryRun: row.dry_run,
+    decidedAt: row.decided_at,
+  }));
+}
+
+export async function triggerEvaluateRouteSplits(
+  mountainId?: string,
+  dryRun = true,
+): Promise<EvaluateRouteSplitsResult> {
+  if (!supabase) throw new Error('Supabase client not configured');
+
+  const { data, error } = await supabase.functions.invoke(
+    'evaluate-route-splits',
+    { method: 'POST', body: { mountainId, dryRun } },
+  );
+
+  if (error) throw new Error(error.message ?? 'Edge function invocation failed');
+
+  return {
+    plansEvaluated: data?.plansEvaluated ?? 0,
+    plansValid: data?.plansValid ?? 0,
+    dryRun: data?.dryRun ?? true,
+    plans: data?.plans ?? [],
+  };
+}
+
 export async function promoteCandidateCluster(
   mountainId: string,
   displayName: string,
