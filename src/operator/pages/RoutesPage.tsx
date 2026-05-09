@@ -14,11 +14,18 @@ const OperatorRouteMap = lazy(() =>
   })),
 );
 
-export function RoutesPage() {
+type RoutesPageProps = {
+  selectedRouteId: string | null;
+  onSelectRoute: (id: string | null) => void;
+};
+
+export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) {
   const [rows, setRows] = useState<OperatorRouteCoverage[]>([]);
-  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<OperatorRouteDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mountainFilter, setMountainFilter] = useState<string>('all');
+  const [stateFilter, setStateFilter] = useState<string>('all');
+  const [mapExpanded, setMapExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,9 +33,9 @@ export function RoutesPage() {
       .then((nextRows) => {
         if (cancelled) return;
         setRows(nextRows);
-        setSelectedRouteId(
-          (current) => current ?? nextRows.find((r) => r.routeId !== null)?.routeId ?? null,
-        );
+        if (selectedRouteId === null) {
+          onSelectRoute(nextRows.find((r) => r.routeId !== null)?.routeId ?? null);
+        }
       })
       .catch((nextError: Error) => {
         if (!cancelled) setError(nextError.message);
@@ -45,11 +52,25 @@ export function RoutesPage() {
     return () => { cancelled = true; };
   }, [selectedRouteId]);
 
+  const mountains = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const row of rows) seen.set(row.mountainId, row.mountainDisplayName);
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [rows]);
+
+  const filteredRows = useMemo(() => rows.filter((row) => {
+    if (row.routeId === null) return false;
+    if (mountainFilter !== 'all' && row.mountainId !== mountainFilter) return false;
+    if (stateFilter !== 'all' && row.routeState !== stateFilter) return false;
+    return true;
+  }), [rows, mountainFilter, stateFilter]);
+
   const selectedRow = useMemo(
     () => rows.find((row) => row.routeId === selectedRouteId) ?? null,
     [rows, selectedRouteId],
   );
   const detail = selectedDetail ?? selectedRow;
+  const geometry = detail ? routeGeometry(detail) : null;
 
   return (
     <>
@@ -66,23 +87,42 @@ export function RoutesPage() {
       )}
 
       <div className="filter-row">
-        <select className="filter-select" disabled><option>Route state: All</option></select>
-        <select className="filter-select" disabled><option>Mountain: All</option></select>
-        <select className="filter-select" disabled><option>Updated: All time</option></select>
+        <select
+          className="filter-select"
+          value={stateFilter}
+          onChange={(e) => setStateFilter(e.target.value)}
+        >
+          <option value="all">State: All</option>
+          <option value="recommended">Recommended</option>
+          <option value="reference">Reference</option>
+          <option value="none">None</option>
+        </select>
+        <select
+          className="filter-select"
+          value={mountainFilter}
+          onChange={(e) => setMountainFilter(e.target.value)}
+        >
+          <option value="all">Mountain: All</option>
+          {mountains.map(([id, name]) => (
+            <option key={id} value={id}>{name}</option>
+          ))}
+        </select>
         <div className="filter-spacer" />
-        <button className="btn btn-ghost" type="button" disabled>↓ Export</button>
       </div>
 
       <div className="route-layout">
         <div className="table-panel">
           <div className="table-panel-header">
             <span className="table-panel-title">Route coverage</span>
+            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+              {filteredRows.length} route{filteredRows.length !== 1 ? 's' : ''}
+            </span>
           </div>
           <table>
             <thead>
               <tr>
-                <th>Mountain</th>
                 <th>Route</th>
+                <th>Mountain</th>
                 <th>State</th>
                 <th>Confidence</th>
                 <th>Sessions</th>
@@ -91,46 +131,60 @@ export function RoutesPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
-                <tr
-                  className={row.routeId === selectedRouteId ? 'selected-row' : ''}
-                  key={row.routeId ?? row.mountainId}
-                >
-                  <td>
-                    <span className="cell-name">{row.mountainDisplayName}</span>
-                    <span className="cell-sub">{row.mountainId}</span>
-                  </td>
-                  <td>
-                    {row.routeId !== null ? (
-                      <button
-                        className="link-button"
-                        onClick={() => setSelectedRouteId(row.routeId)}
-                        type="button"
-                      >
-                        <span className="cell-name">{row.routeDisplayName}</span>
-                        <span className="cell-sub">{row.routeId}</span>
-                      </button>
-                    ) : (
-                      <span className="cell-sub">—</span>
-                    )}
-                  </td>
-                  <td><RouteBadge state={row.routeState} /></td>
-                  <td>{formatScore(row.confidence)}</td>
-                  <td>{row.sessionCount}</td>
-                  <td>{formatScore(row.branchAmbiguityScore)}</td>
-                  <td>{formatScore(row.gpsQualityScore)}</td>
-                </tr>
-              ))}
+              {filteredRows.map((row) => {
+                const isSelected = row.routeId === selectedRouteId;
+                return (
+                  <tr
+                    key={row.routeId ?? row.mountainId}
+                    className={isSelected ? 'selected-row' : ''}
+                    style={{ cursor: row.routeId !== null ? 'pointer' : undefined }}
+                    onClick={() => { if (row.routeId !== null) onSelectRoute(row.routeId); }}
+                  >
+                    <td>
+                      {row.routeId !== null ? (
+                        <>
+                          <span className="cell-name" style={{ fontWeight: isSelected ? 700 : 400 }}>{row.routeDisplayName}</span>
+                          <span className="cell-sub">{row.routeId}</span>
+                        </>
+                      ) : (
+                        <span className="cell-sub">—</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className="cell-name" style={{ fontWeight: isSelected ? 700 : 400 }}>{row.mountainDisplayName}</span>
+                      <span className="cell-sub">{row.mountainId}</span>
+                    </td>
+                    <td><RouteBadge state={row.routeState} /></td>
+                    <td>{formatScore(row.confidence)}</td>
+                    <td>{row.sessionCount}</td>
+                    <td>{formatScore(row.branchAmbiguityScore)}</td>
+                    <td>{formatScore(row.gpsQualityScore)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
 
         <div className="route-detail-panel">
           <div className="card">
-            <div className="card-title">
-              {detail && detail.routeId !== null
-                ? `${detail.mountainDisplayName} — ${detail.routeDisplayName ?? detail.routeId}`
-                : 'Select a route'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <div className="card-title" style={{ margin: 0, flex: 1 }}>
+                {detail && detail.routeId !== null
+                  ? `${detail.routeDisplayName ?? detail.routeId} — ${detail.mountainDisplayName}`
+                  : 'Select a route'}
+              </div>
+              {detail && detail.routeId !== null && (
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  title="지도 확대"
+                  onClick={() => setMapExpanded(true)}
+                  style={{ fontSize: 15, padding: '3px 8px', lineHeight: 1 }}
+                >
+                  ⤢
+                </button>
+              )}
             </div>
             {detail && detail.routeId !== null ? (
               <>
@@ -152,18 +206,8 @@ export function RoutesPage() {
                     <strong>{detail.sessionCount}</strong>
                   </div>
                 </div>
-                <Suspense
-                  fallback={
-                    <div className="route-map-empty">
-                      <strong>Loading map</strong>
-                      <span>Preparing route preview.</span>
-                    </div>
-                  }
-                >
-                  <OperatorRouteMap
-                    geometry={routeGeometry(detail)}
-                    routeState={detail.routeState}
-                  />
+                <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing route preview.</span></div>}>
+                  <OperatorRouteMap geometry={geometry} routeState={detail.routeState} />
                 </Suspense>
               </>
             ) : (
@@ -173,34 +217,35 @@ export function RoutesPage() {
               </div>
             )}
           </div>
-
-          <div className="card">
-            <div className="card-title">Snap thresholds</div>
-            <div className="threshold-item">
-              <span className="threshold-dot" style={{ background: '#1f8f5f' }} />
-              <span>On route — ≤ 25 m</span>
-            </div>
-            <div className="threshold-item">
-              <span className="threshold-dot" style={{ background: '#c47800' }} />
-              <span>Caution — 26–50 m</span>
-            </div>
-            <div className="threshold-item">
-              <span className="threshold-dot" style={{ background: '#8a3c2f' }} />
-              <span>Away — &gt; 50 m</span>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="card-title">About this page</div>
-            <ul className="bullet-list">
-              <li>Multiple routes per mountain</li>
-              <li>Confidence inputs below</li>
-              <li>Ambiguous branch review</li>
-              <li>Snap thresholds per route</li>
-            </ul>
-          </div>
         </div>
       </div>
+
+      {mapExpanded && detail && detail.routeId !== null && (
+        <div className="modal-backdrop" onClick={() => setMapExpanded(false)}>
+          <div
+            className="modal map-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <h3 className="modal-title" style={{ margin: 0, flex: 1 }}>
+                {detail.routeDisplayName ?? detail.routeId}
+                <span style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: 6 }}>— {detail.mountainDisplayName}</span>
+              </h3>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                onClick={() => setMapExpanded(false)}
+                style={{ fontSize: 16, padding: '2px 8px', lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            </div>
+            <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing route preview.</span></div>}>
+              <OperatorRouteMap geometry={geometry} routeState={detail.routeState} />
+            </Suspense>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -57,14 +57,24 @@ const mapLayers: Record<
 };
 
 function zoomToH3Res(zoom: number): number {
-  if (zoom < 9)  return 6;
-  if (zoom < 10) return 7;
-  if (zoom < 11) return 8;
-  if (zoom < 12) return 9;
-  if (zoom < 13) return 10;
+  if (zoom < 9)  return 5;
+  if (zoom < 10) return 6;
+  if (zoom < 11) return 7;
+  if (zoom < 12) return 8;
+  if (zoom < 13) return 9;
+  if (zoom < 14) return 10;
   return 11;
 }
 
+
+// Interpolate between reference orange (#c27a00) and recommended green (#1f8f5f)
+function cellColor(t: number): [number, number, number] {
+  return [
+    Math.round(194 + (31  - 194) * t),
+    Math.round(122 + (143 - 122) * t),
+    Math.round(0   + (95  - 0)   * t),
+  ];
+}
 
 function buildCellFeatures(cells: CandidateCell[], zoom: number): Feature<Polygon>[] {
   const res = zoomToH3Res(zoom);
@@ -81,10 +91,12 @@ function buildCellFeatures(cells: CandidateCell[], zoom: number): Feature<Polygo
     const boundary = cellToBoundary(key, true);
     const ring = boundary.map(([lon, lat]) => fromLonLat([lon, lat]));
     const feature = new Feature(new Polygon([ring]));
-    const opacity = 0.25 + 0.65 * (count / maxCount);
+    const t = count / maxCount;
+    const [r, g, b] = cellColor(t);
+    const fillOpacity = 0.25 + 0.50 * t;
     feature.setStyle(new Style({
-      fill: new Fill({ color: `rgba(255, 140, 0, ${opacity.toFixed(2)})` }),
-      stroke: new Stroke({ color: 'rgba(200, 100, 0, 0.4)', width: 1 }),
+      fill: new Fill({ color: `rgba(${r},${g},${b},${fillOpacity.toFixed(2)})` }),
+      stroke: new Stroke({ color: `rgba(${r},${g},${b},0.55)`, width: 1 }),
     }));
     return feature;
   });
@@ -94,27 +106,35 @@ export function OperatorRouteMap({ geometry, routeState, bbox, routes, cells }: 
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const [selectedLayer, setSelectedLayer] = useState<RouteMapLayerId>('map');
   const layerConfig = mapLayers[selectedLayer];
+  const tileLayerRef = useRef<TileLayer<OSM | XYZ> | null>(null);
 
+  // ── Map creation — runs only when data changes, NOT on layer switch ──────────
   useEffect(() => {
     if (!mapElementRef.current) return undefined;
     const hasRoutes = (routes?.length ?? 0) > 0;
     const hasCells = (cells?.length ?? 0) > 0;
     if (geometry === null && !bbox && !hasRoutes && !hasCells) return undefined;
 
+    const tileLayer = new TileLayer({ source: mapLayers['map'].createSource() });
+    tileLayerRef.current = tileLayer;
+
     const view = new View({ center: [0, 0], zoom: 2 });
     const map = new Map({
       target: mapElementRef.current,
-      layers: [new TileLayer({ source: layerConfig.createSource() })],
+      layers: [tileLayer],
       view,
     });
 
+    // Apply the currently selected layer immediately after creation
+    tileLayer.setSource(mapLayers[selectedLayer].createSource());
+
     let extentFitSource: VectorSource | null = null;
 
-    // ── Cell heatmap (rendered below route lines) ─────────────────────────────
+    // ── Cell heatmap (z=1, below route lines) ────────────────────────────────
     let cellSource: VectorSource | null = null;
     if (hasCells) {
       cellSource = new VectorSource();
-      map.addLayer(new VectorLayer({ source: cellSource }));
+      map.addLayer(new VectorLayer({ source: cellSource, zIndex: 1 }));
 
       if (!bbox && !hasRoutes) {
         extentFitSource = new VectorSource({
@@ -123,7 +143,7 @@ export function OperatorRouteMap({ geometry, routeState, bbox, routes, cells }: 
       }
     }
 
-    // ── Route lines (rendered on top of heatmap) ──────────────────────────────
+    // ── Route lines (z=2, on top of heatmap) ─────────────────────────────────
     if (hasRoutes) {
       const allFeatures: Feature<LineString>[] = [];
       for (const route of routes!) {
@@ -134,6 +154,7 @@ export function OperatorRouteMap({ geometry, routeState, bbox, routes, cells }: 
         map.addLayer(new VectorLayer({
           source: new VectorSource({ features: [feature] }),
           style: new Style({ stroke: new Stroke({ color: routeColors[route.routeState], width: 3 }) }),
+          zIndex: 2,
         }));
       }
       if (!bbox) extentFitSource = new VectorSource({ features: allFeatures });
@@ -145,6 +166,7 @@ export function OperatorRouteMap({ geometry, routeState, bbox, routes, cells }: 
       map.addLayer(new VectorLayer({
         source,
         style: new Style({ stroke: new Stroke({ color: routeColors[routeState], width: 3 }) }),
+        zIndex: 2,
       }));
       if (!bbox) extentFitSource = source;
     }
@@ -173,8 +195,16 @@ export function OperatorRouteMap({ geometry, routeState, bbox, routes, cells }: 
       map.on('moveend', renderCells);
     }
 
-    return () => { map.setTarget(undefined); };
-  }, [geometry, bbox, routes, cells, layerConfig, routeState]);
+    return () => {
+      map.setTarget(undefined);
+      tileLayerRef.current = null;
+    };
+  }, [geometry, bbox, routes, cells, routeState]); // layerConfig 제외 — 별도 effect로 처리
+
+  // ── Layer switch — tile source만 교체, 뷰 위치 유지 ──────────────────────────
+  useEffect(() => {
+    tileLayerRef.current?.setSource(layerConfig.createSource());
+  }, [layerConfig]);
 
   if (geometry === null && !bbox && !(routes?.length) && !(cells?.length)) {
     return (

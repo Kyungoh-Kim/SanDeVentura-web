@@ -25,6 +25,7 @@ function getInitialPage(): PageId {
 
 export function OperatorApp() {
   const [active, setActive] = useState<PageId>(getInitialPage);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
 
   useEffect(() => {
     const onHash = () => {
@@ -71,14 +72,6 @@ export function OperatorApp() {
 
       <div className="content-wrapper">
         <header className="top-bar">
-          <select className="top-bar-select" defaultValue="all">
-            <option value="all">All Mountains</option>
-          </select>
-          <select className="top-bar-select" defaultValue="7d">
-            <option value="7d">Last 7 Days</option>
-            <option value="30d">Last 30 Days</option>
-            <option value="all">All time</option>
-          </select>
           <span className="online-pill">
             <span className="online-dot" />
             Online
@@ -92,13 +85,13 @@ export function OperatorApp() {
             <div className="page-section"><OverviewPage /></div>
           </div>
           <div style={{ display: active === 'routes' ? 'block' : 'none' }}>
-            <div className="page-section"><RoutesPage /></div>
+            <div className="page-section"><RoutesPage selectedRouteId={selectedRouteId} onSelectRoute={setSelectedRouteId} /></div>
           </div>
           <div style={{ display: active === 'sessions' ? 'block' : 'none' }}>
             <div className="page-section"><SessionsPage /></div>
           </div>
           <div style={{ display: active === 'quality' ? 'block' : 'none' }}>
-            <div className="page-section"><QualityPage /></div>
+            <div className="page-section"><QualityPage selectedRouteId={selectedRouteId} onSelectRoute={setSelectedRouteId} /></div>
           </div>
           <div style={{ display: active === 'mountains' ? 'block' : 'none' }}>
             <div className="page-section"><MountainsPage /></div>

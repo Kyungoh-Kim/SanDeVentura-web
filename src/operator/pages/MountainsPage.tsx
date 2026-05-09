@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 
-import { type CandidateCell, type Mountain, type OperatorRouteDetail } from '../data/readModels';
+import { type CandidateCell, type Mountain, type OperatorRouteCoverage, type OperatorRouteDetail } from '../data/readModels';
 import {
   fetchMountains,
   formatBbox,
@@ -8,7 +8,7 @@ import {
   updateMountainBbox,
 } from '../data/mountainsRepository';
 import { fetchCandidateCells, fetchTrailCells } from '../data/operationsRepository';
-import { fetchMountainRouteDetails } from '../data/routesRepository';
+import { fetchMountainRouteDetails, fetchRouteCoverage } from '../data/routesRepository';
 
 const OperatorRouteMap = lazy(() =>
   import('../components/OperatorRouteMap').then((m) => ({ default: m.OperatorRouteMap })),
@@ -24,18 +24,48 @@ type EditState = {
 
 export function MountainsPage() {
   const [mountains, setMountains] = useState<Mountain[]>([]);
+  const [coverage, setCoverage] = useState<OperatorRouteCoverage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewRoutes, setPreviewRoutes] = useState<OperatorRouteDetail[]>([]);
   const [previewCells, setPreviewCells] = useState<CandidateCell[]>([]);
+  const [mapExpanded, setMapExpanded] = useState(false);
 
   const loadMountains = useCallback(() => {
-    fetchMountains()
-      .then(setMountains)
+    Promise.all([fetchMountains(), fetchRouteCoverage()])
+      .then(([m, cov]) => { setMountains(m); setCoverage(cov); })
       .catch((e: Error) => setError(e.message));
   }, []);
+
+  const mountainStats = useMemo(() => {
+    const stats = new Map<string, {
+      routes: number; recommended: number; reference: number; sessions: number;
+      confidenceSum: number; confidenceCount: number; latestUpdatedAt: string | null;
+    }>();
+    for (const row of coverage) {
+      if (row.routeId === null) continue;
+      const s = stats.get(row.mountainId) ?? { routes: 0, recommended: 0, reference: 0, sessions: 0, confidenceSum: 0, confidenceCount: 0, latestUpdatedAt: null };
+      s.routes++;
+      if (row.routeState === 'recommended') s.recommended++;
+      else if (row.routeState === 'reference') s.reference++;
+      s.sessions += row.sessionCount;
+      if (row.confidence !== null) { s.confidenceSum += row.confidence; s.confidenceCount++; }
+      if (row.updatedAt !== null && (s.latestUpdatedAt === null || row.updatedAt > s.latestUpdatedAt)) {
+        s.latestUpdatedAt = row.updatedAt;
+      }
+      stats.set(row.mountainId, s);
+    }
+    return stats;
+  }, [coverage]);
+
+  const totals = useMemo(() => ({
+    mountains: mountains.length,
+    routes: coverage.filter((r) => r.routeId !== null).length,
+    recommended: coverage.filter((r) => r.routeState === 'recommended').length,
+    sessions: coverage.reduce((s, r) => s + r.sessionCount, 0),
+  }), [mountains, coverage]);
 
   useEffect(() => {
     loadMountains();
@@ -132,6 +162,25 @@ export function MountainsPage() {
         </div>
       )}
 
+      <div className="stat-row" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+        <div className="stat-card">
+          <div className="stat-label">Mountains</div>
+          <div className="stat-value">{totals.mountains}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Total routes</div>
+          <div className="stat-value">{totals.routes}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Recommended</div>
+          <div className="stat-value good">{totals.recommended}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Total sessions</div>
+          <div className="stat-value">{totals.sessions.toLocaleString()}</div>
+        </div>
+      </div>
+
       <div className="route-layout">
         <div className="table-panel">
           <div className="table-panel-header">
@@ -141,6 +190,10 @@ export function MountainsPage() {
             <thead>
               <tr>
                 <th>Mountain</th>
+                <th>Routes</th>
+                <th>Sessions</th>
+                <th>Avg conf.</th>
+                <th>Last updated</th>
                 <th>BBox (minLon, minLat, maxLon, maxLat)</th>
                 <th></th>
               </tr>
@@ -148,7 +201,7 @@ export function MountainsPage() {
             <tbody>
               {mountains.length === 0 && (
                 <tr>
-                  <td colSpan={3} style={{ color: 'var(--text-3)', textAlign: 'center', padding: 16 }}>
+                  <td colSpan={7} style={{ color: 'var(--text-3)', textAlign: 'center', padding: 16 }}>
                     No mountains found.
                   </td>
                 </tr>
@@ -156,26 +209,55 @@ export function MountainsPage() {
               {mountains.map((mountain) => {
                 const isEditing = edit?.mountainId === mountain.id;
                 const isSaving = saving === mountain.id;
+                const isSelected = previewId === mountain.id;
                 return (
                   <tr
                     key={mountain.id}
-                    className={previewId === mountain.id ? 'selected-row' : ''}
+                    className={isSelected ? 'selected-row' : ''}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => setPreviewId((prev) => prev === mountain.id ? null : mountain.id)}
                   >
                     <td>
-                      <button
-                        className="link-button"
-                        type="button"
-                        onClick={() =>
-                          setPreviewId((prev) =>
-                            prev === mountain.id ? null : mountain.id,
-                          )
-                        }
-                      >
-                        <span className="cell-name">{mountain.displayName}</span>
-                        <span className="cell-sub">{mountain.id}</span>
-                      </button>
+                      <span className="cell-name" style={{ fontWeight: isSelected ? 700 : 400 }}>{mountain.displayName}</span>
+                      <span className="cell-sub">{mountain.id}</span>
                     </td>
                     <td>
+                      {(() => {
+                        const s = mountainStats.get(mountain.id);
+                        if (!s || s.routes === 0) return <span className="cell-sub">—</span>;
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span className="cell-mono">{s.routes}</span>
+                            <span style={{ display: 'flex', gap: 3 }}>
+                              {s.recommended > 0 && <span className="status-badge recommended" style={{ fontSize: 10, padding: '1px 5px' }}>{s.recommended} rec</span>}
+                              {s.reference > 0 && <span className="status-badge reference" style={{ fontSize: 10, padding: '1px 5px' }}>{s.reference} ref</span>}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                    <td>
+                      <span className="cell-mono">
+                        {mountainStats.get(mountain.id)?.sessions.toLocaleString() ?? '—'}
+                      </span>
+                    </td>
+                    <td>
+                      {(() => {
+                        const s = mountainStats.get(mountain.id);
+                        if (!s || s.confidenceCount === 0) return <span className="cell-sub">—</span>;
+                        const pct = Math.round((s.confidenceSum / s.confidenceCount) * 100);
+                        const color = pct >= 70 ? 'var(--success)' : pct >= 40 ? 'var(--warn)' : 'var(--error, #e55)';
+                        return <span className="cell-mono" style={{ color }}>{pct}%</span>;
+                      })()}
+                    </td>
+                    <td>
+                      {(() => {
+                        const s = mountainStats.get(mountain.id);
+                        if (!s?.latestUpdatedAt) return <span className="cell-sub">—</span>;
+                        return <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{formatRelativeDate(s.latestUpdatedAt)}</span>;
+                      })()}
+                    </td>
+                    <td onClick={(e) => e.stopPropagation()}>
                       {isEditing ? (
                         <BboxInputs
                           edit={edit!}
@@ -189,31 +271,18 @@ export function MountainsPage() {
                         </span>
                       )}
                     </td>
-                    <td>
+                    <td onClick={(e) => e.stopPropagation()}>
                       {isEditing ? (
                         <div style={{ display: 'flex', gap: 6 }}>
-                          <button
-                            className="btn btn-primary"
-                            type="button"
-                            disabled={isSaving}
-                            onClick={saveEdit}
-                          >
+                          <button className="btn btn-primary" type="button" disabled={isSaving} onClick={saveEdit}>
                             {isSaving ? '…' : 'Save'}
                           </button>
-                          <button
-                            className="btn btn-ghost"
-                            type="button"
-                            onClick={cancelEdit}
-                          >
+                          <button className="btn btn-ghost" type="button" onClick={cancelEdit}>
                             Cancel
                           </button>
                         </div>
                       ) : (
-                        <button
-                          className="btn btn-ghost"
-                          type="button"
-                          onClick={() => startEdit(mountain)}
-                        >
+                        <button className="btn btn-ghost" type="button" onClick={() => startEdit(mountain)}>
                           Edit bbox
                         </button>
                       )}
@@ -227,27 +296,29 @@ export function MountainsPage() {
 
         <div className="route-detail-panel">
           <div className="card">
-            <div className="card-title">
-              {previewMountain
-                ? `Map preview — ${previewMountain.displayName}`
-                : 'Select a mountain'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <div className="card-title" style={{ margin: 0, flex: 1 }}>
+                {previewMountain ? previewMountain.displayName : 'Select a mountain'}
+              </div>
+              {previewMountain && (
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  title="지도 확대"
+                  onClick={() => setMapExpanded(true)}
+                  style={{ fontSize: 15, padding: '3px 8px', lineHeight: 1 }}
+                >
+                  ⤢
+                </button>
+              )}
             </div>
             {previewMountain ? (
-              <Suspense
-                fallback={
-                  <div className="route-map-empty">
-                    <strong>Loading map</strong>
-                    <span>Preparing map preview.</span>
-                  </div>
-                }
-              >
+              <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing map preview.</span></div>}>
                 <OperatorRouteMap
                   geometry={null}
                   routeState="none"
                   bbox={previewBbox}
-                  routes={previewRoutes
-                    .filter((r) => r.trailGeoJson !== null)
-                    .map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState }))}
+                  routes={previewRoutes.filter((r) => r.trailGeoJson !== null).map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState }))}
                   cells={previewCells}
                 />
               </Suspense>
@@ -258,20 +329,47 @@ export function MountainsPage() {
               </div>
             )}
           </div>
-
-          <div className="card">
-            <div className="card-title">About bbox</div>
-            <ul className="bullet-list">
-              <li>Format: minLon,minLat,maxLon,maxLat</li>
-              <li>WGS84 decimal degrees</li>
-              <li>Used to frame the map view</li>
-              <li>Falls back to route geometry when present</li>
-            </ul>
-          </div>
         </div>
       </div>
+
+      {mapExpanded && previewMountain && (
+        <div className="modal-backdrop" onClick={() => setMapExpanded(false)}>
+          <div className="modal map-modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <h3 className="modal-title" style={{ margin: 0, flex: 1 }}>{previewMountain.displayName}</h3>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                onClick={() => setMapExpanded(false)}
+                style={{ fontSize: 16, padding: '2px 8px', lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            </div>
+            <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing map preview.</span></div>}>
+              <OperatorRouteMap
+                geometry={null}
+                routeState="none"
+                bbox={previewBbox}
+                routes={previewRoutes.filter((r) => r.trailGeoJson !== null).map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState }))}
+                cells={previewCells}
+              />
+            </Suspense>
+          </div>
+        </div>
+      )}
     </>
   );
+}
+
+function formatRelativeDate(isoString: string): string {
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  const diffDays = Math.floor(diffMs / 86_400_000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+  return new Date(isoString).toLocaleDateString();
 }
 
 function BboxInputs({

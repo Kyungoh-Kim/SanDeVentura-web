@@ -4,7 +4,12 @@ import { type OperatorRouteQualityDetail } from '../data/readModels';
 import { type MatchAndAggregateResult, triggerMatchAndAggregate } from '../data/operationsRepository';
 import { fetchRouteQualityDetails } from '../data/routesRepository';
 
-export function QualityPage() {
+type QualityPageProps = {
+  selectedRouteId: string | null;
+  onSelectRoute: (id: string | null) => void;
+};
+
+export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps) {
   const [rows, setRows] = useState<OperatorRouteQualityDetail[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [recalculating, setRecalculating] = useState(false);
@@ -14,7 +19,14 @@ export function QualityPage() {
   useEffect(() => {
     let cancelled = false;
     fetchRouteQualityDetails()
-      .then((nextRows) => { if (!cancelled) setRows(nextRows); })
+      .then((nextRows) => {
+        if (!cancelled) {
+          setRows(nextRows);
+          if (selectedRouteId === null) {
+            onSelectRoute(nextRows.find((r) => r.routeId !== null)?.routeId ?? null);
+          }
+        }
+      })
       .catch((nextError: Error) => { if (!cancelled) setError(nextError.message); });
     return () => { cancelled = true; };
   }, []);
@@ -26,7 +38,6 @@ export function QualityPage() {
     try {
       const result = await triggerMatchAndAggregate();
       setRecalcResult(result);
-      // Refresh quality rows after recalculation
       const nextRows = await fetchRouteQualityDetails();
       setRows(nextRows);
     } catch (err) {
@@ -37,15 +48,15 @@ export function QualityPage() {
   }
 
   const counts = useMemo(() => ({
-    recommended: rows.filter((row) => row.routeState === 'recommended').length,
-    reference: rows.filter((row) => row.routeState === 'reference').length,
-    missing: rows.filter((row) => row.routeState === 'none').length,
+    recommended: rows.filter((r) => r.routeState === 'recommended').length,
+    reference: rows.filter((r) => r.routeState === 'reference').length,
+    missing: rows.filter((r) => r.routeState === 'none').length,
   }), [rows]);
 
   const totalAccepted = rows.reduce((s, r) => s + r.acceptedPointCount, 0);
   const totalRejected = rows.reduce((s, r) => s + r.rejectedPointCount, 0);
 
-  const firstRow = rows[0] ?? null;
+  const selectedRow = rows.find((r) => r.routeId === selectedRouteId) ?? null;
 
   return (
     <>
@@ -75,19 +86,11 @@ export function QualityPage() {
           </span>
         </div>
       )}
-
       {recalcError && (
-        <div className="notice error">
-          <strong>Recalculation failed</strong>
-          <span>{recalcError}</span>
-        </div>
+        <div className="notice error"><strong>Recalculation failed</strong><span>{recalcError}</span></div>
       )}
-
       {error && (
-        <div className="notice error">
-          <strong>Quality detail unavailable</strong>
-          <span>{error}</span>
-        </div>
+        <div className="notice error"><strong>Quality detail unavailable</strong><span>{error}</span></div>
       )}
 
       <div className="stat-row" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
@@ -119,11 +122,13 @@ export function QualityPage() {
         <div style={{ display: 'grid', gap: 14 }}>
           <div className="table-panel">
             <div className="table-panel-header">
-              <span className="table-panel-title">Route coverage</span>
+              <span className="table-panel-title">Route quality</span>
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>행 클릭 → confidence 상세</span>
             </div>
             <table>
               <thead>
                 <tr>
+                  <th>Route</th>
                   <th>Mountain</th>
                   <th>State</th>
                   <th>Confidence</th>
@@ -136,24 +141,38 @@ export function QualityPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr key={row.routeId ?? row.mountainId}>
-                    <td>
-                      <span className="cell-name">{row.mountainDisplayName}</span>
-                      <span className="cell-sub">{row.routeDisplayName ?? '—'} · {row.mountainId}</span>
-                    </td>
-                    <td>
-                      <span className={`status-badge ${row.routeState}`}>{row.routeState}</span>
-                    </td>
-                    <td>{formatScore(row.confidence)}</td>
-                    <td>{row.sessionCount}</td>
-                    <td>{formatScore(row.gpsQualityScore)}</td>
-                    <td>{formatScore(row.branchAmbiguityScore)}</td>
-                    <td>{row.acceptedPointCount}</td>
-                    <td>{row.rejectedPointCount}</td>
-                    <td style={{ fontSize: 12 }}>{formatDate(row.latestEvidenceAt)}</td>
-                  </tr>
-                ))}
+                {rows.filter((row) => row.routeId !== null).map((row) => {
+                  const isSelected = row.routeId === selectedRouteId;
+                  return (
+                    <tr
+                      key={row.routeId ?? row.mountainId}
+                      className={isSelected ? 'selected-row' : ''}
+                      style={{ cursor: row.routeId !== null ? 'pointer' : undefined }}
+                      onClick={() => { if (row.routeId !== null) onSelectRoute(row.routeId); }}
+                    >
+                      <td>
+                        <span className="cell-name" style={{ fontWeight: isSelected ? 700 : 400 }}>
+                          {row.routeDisplayName ?? '—'}
+                        </span>
+                        <span className="cell-sub">{row.routeId ?? '—'}</span>
+                      </td>
+                      <td>
+                        <span className="cell-name" style={{ fontWeight: isSelected ? 700 : 400 }}>
+                          {row.mountainDisplayName}
+                        </span>
+                        <span className="cell-sub">{row.mountainId}</span>
+                      </td>
+                      <td><span className={`status-badge ${row.routeState}`}>{row.routeState}</span></td>
+                      <td>{formatScore(row.confidence)}</td>
+                      <td>{row.sessionCount}</td>
+                      <td>{formatScore(row.gpsQualityScore)}</td>
+                      <td>{formatScore(row.branchAmbiguityScore)}</td>
+                      <td>{row.acceptedPointCount.toLocaleString()}</td>
+                      <td>{row.rejectedPointCount.toLocaleString()}</td>
+                      <td style={{ fontSize: 12 }}>{formatDate(row.latestEvidenceAt)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -161,53 +180,53 @@ export function QualityPage() {
 
         <div className="side-stack">
           <div className="card">
-            <div className="card-title">Confidence inputs</div>
-            {firstRow ? (
+            <div className="card-title">
+              Confidence inputs
+              {selectedRow && (
+                <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-3)', marginLeft: 6 }}>
+                  — {selectedRow.routeDisplayName ?? selectedRow.routeId}
+                </span>
+              )}
+            </div>
+            {selectedRow ? (
               <>
-                <ScoreRow label="Session count" value={firstRow.sessionCount} max={10} />
-                <ScoreRow label="GPS quality" value={firstRow.gpsQualityScore} max={1} />
-                <ScoreRow label="Branch ambiguity" value={firstRow.branchAmbiguityScore} max={1} invert />
-                <ScoreRow label="Recency" value={1} max={1} />
-                <ScoreRow label="Confidence" value={firstRow.confidence} max={1} />
+                <ScoreRow label="세션 기여도" value={Math.min(1, selectedRow.sessionCount / 5)} max={1} note={`${selectedRow.sessionCount} / 5`} />
+                <ScoreRow label="GPS 품질" value={selectedRow.gpsQualityScore} max={1} />
+                <ScoreRow label="분기 명확성" value={selectedRow.branchAmbiguityScore} max={1} invert />
+                <ScoreRow label="Confidence" value={selectedRow.confidence} max={1} bold />
+                <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+                  Accepted {selectedRow.acceptedPointCount.toLocaleString()} pts
+                  &nbsp;·&nbsp;
+                  Rejected {selectedRow.rejectedPointCount.toLocaleString()} pts
+                  {selectedRow.acceptedPointCount + selectedRow.rejectedPointCount > 0 && (
+                    <> ({Math.round(selectedRow.rejectedPointCount / (selectedRow.acceptedPointCount + selectedRow.rejectedPointCount) * 100)}% rejected)</>
+                  )}
+                </div>
               </>
             ) : (
-              <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No data loaded.</p>
+              <p style={{ fontSize: 13, color: 'var(--text-3)' }}>행을 선택하세요.</p>
             )}
           </div>
 
           <div className="card">
-            <div className="card-title">Privacy &amp; RLS</div>
-            <div className="check-item">
-              <span className="check-dot">✓</span>
-              Raw traces protected
-            </div>
-            <div className="check-item">
-              <span className="check-dot">✓</span>
-              Consent enforced
-            </div>
-            <div className="check-item">
-              <span className="check-dot">✓</span>
-              Event payload safe
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="card-title">Operator notes</div>
+            <div className="card-title">구현 예정 기능</div>
             <ul className="bullet-list">
-              <li>Operator quality only</li>
-              <li>Route coverage by mountain</li>
-              <li>Privacy and RLS checks</li>
-              <li>Accepted / rejected points</li>
-            </ul>
-          </div>
-
-          <div className="card">
-            <div className="card-title">Beta gate</div>
-            <ul className="bullet-list">
-              <li>Routes below gate stay reference-only.</li>
-              <li>Raw track points blocked by RLS.</li>
-              <li>Snap payloads store buckets, not coords.</li>
-              <li>Staging credentials or field evidence required.</li>
+              <li>
+                <strong>품질 알림</strong> — confidence가 임계값 이하로 떨어지거나 최신성(recency)이 낮아질 때
+                오퍼레이터에게 알림. mvp_events 또는 별도 quality_alerts 테이블 필요.
+              </li>
+              <li>
+                <strong>거절 포인트 감사</strong> — 루트별 거절률이 높은 세션 목록 드릴다운.
+                rejected_track_points 테이블 조회 + 세션별 reason 분석.
+              </li>
+              <li>
+                <strong>신뢰도 변화 추이</strong> — canonical_trails의 version 이력을 기반으로
+                confidence 시계열 차트. 현재 latest version만 조회 중.
+              </li>
+              <li>
+                <strong>루트별 알림 임계값 설정</strong> — recommended 기준(현재 전역 상수)을
+                산/루트별로 다르게 설정할 수 있는 UI.
+              </li>
             </ul>
           </div>
         </div>
@@ -221,11 +240,15 @@ function ScoreRow({
   value,
   max,
   invert = false,
+  bold = false,
+  note,
 }: {
   label: string;
   value: number | null;
   max: number;
   invert?: boolean;
+  bold?: boolean;
+  note?: string;
 }) {
   const raw = value ?? 0;
   const pct = Math.min(100, Math.round((raw / max) * 100));
@@ -235,11 +258,14 @@ function ScoreRow({
 
   return (
     <div className="score-row">
-      <span className="score-label">{label}</span>
+      <span className="score-label" style={{ fontWeight: bold ? 600 : undefined }}>
+        {label}
+        {note && <span style={{ color: 'var(--text-3)', fontWeight: 400, marginLeft: 4 }}>({note})</span>}
+      </span>
       <div className="score-track">
         <div className={`score-fill ${fillClass}`} style={{ width: `${displayPct}%` }} />
       </div>
-      <span className="score-val">{display}</span>
+      <span className="score-val" style={{ fontWeight: bold ? 600 : undefined }}>{display}</span>
     </div>
   );
 }

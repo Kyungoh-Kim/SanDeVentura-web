@@ -26,6 +26,7 @@ export type OperatorRouteCoverage = {
   sessionCount: number;
   branchAmbiguityScore: number | null;
   gpsQualityScore: number | null;
+  updatedAt: string | null;
 };
 
 export type GeoJsonLineString = {

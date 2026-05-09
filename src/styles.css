@@ -388,7 +388,7 @@ tr:hover td {
   background: #eef6f2;
 }
 
-.cell-name { font-weight: 600; }
+.cell-name { font-weight: 400; }
 .cell-sub  { font-size: 11px; color: var(--text-3); display: block; }
 .cell-mono { font-family: ui-monospace, monospace; font-size: 12px; }
 
@@ -892,6 +892,17 @@ tr:hover td {
 }
 
 .route-map-empty strong { color: var(--text); }
+
+.modal.map-modal {
+  width: min(1200px, 96vw);
+  max-width: min(1200px, 96vw);
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.map-modal .route-map-shell { flex: 1; min-height: 0; }
+.modal.map-modal .route-map { height: calc(94vh - 100px); }
 
 .map-layer-switch {
   background: rgba(255, 255, 255, 0.9);

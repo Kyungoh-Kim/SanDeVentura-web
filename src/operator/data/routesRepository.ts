@@ -226,6 +226,7 @@ function coverageFromRow(row: CoverageRow): OperatorRouteCoverage {
     sessionCount: row.session_count,
     branchAmbiguityScore: row.branch_ambiguity_score,
     gpsQualityScore: row.gps_quality_score,
+    updatedAt: row.updated_at,
   };
 }
 
