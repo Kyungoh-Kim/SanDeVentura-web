@@ -14,20 +14,28 @@ export async function handleGetMountains(request: Request): Promise<Response> {
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
-  const { data, error } = await supabase
-    .from('mountains')
-    .select('id, display_name')
-    .order('display_name');
+  const [mountainsResult, routesResult] = await Promise.all([
+    supabase.from('mountains').select('id, display_name').order('display_name'),
+    supabase.from('routes').select('id, mountain_id').order('id'),
+  ]);
 
-  if (error) {
-    return jsonResponse({ success: false, errors: [error.message] }, 500);
+  if (mountainsResult.error) {
+    return jsonResponse({ success: false, errors: [mountainsResult.error.message] }, 500);
+  }
+
+  const primaryRouteByMountain = new Map<string, string>();
+  for (const r of routesResult.data ?? []) {
+    if (!primaryRouteByMountain.has(r.mountain_id)) {
+      primaryRouteByMountain.set(r.mountain_id, r.id);
+    }
   }
 
   return jsonResponse({
     success: true,
-    mountains: (data ?? []).map((row: { id: string; display_name: string }) => ({
+    mountains: (mountainsResult.data ?? []).map((row: { id: string; display_name: string }) => ({
       id: row.id,
       displayName: row.display_name,
+      primaryRouteId: primaryRouteByMountain.get(row.id) ?? null,
     })),
   });
 }
