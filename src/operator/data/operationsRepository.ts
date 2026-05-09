@@ -1,3 +1,4 @@
+import { type CandidateCell } from './readModels';
 import { supabase } from './supabaseClient';
 
 export type MatchAndAggregateResult = {
@@ -63,6 +64,36 @@ export async function fetchCandidateClusters(): Promise<CandidateCluster[]> {
     cellCount: row.cell_count,
     totalSessionContributions: row.total_session_contributions,
     latestEvidenceAt: row.latest_evidence_at,
+  }));
+}
+
+export async function fetchCandidateCells(mountainId: string): Promise<CandidateCell[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase.rpc('candidate_cells_for_mountain', {
+    p_mountain_id: mountainId,
+  });
+  if (error || !data) return [];
+  return (data as any[]).map((row) => ({
+    cellKey: row.cell_key,
+    lat: row.lat,
+    lon: row.lon,
+    pointCount: row.point_count,
+    sessionCount: row.session_count,
+  }));
+}
+
+export async function fetchTrailCells(mountainId: string): Promise<CandidateCell[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase.rpc('trail_cells_for_mountain', {
+    p_mountain_id: mountainId,
+  });
+  if (error || !data) return [];
+  return (data as any[]).map((row) => ({
+    cellKey: row.cell_key,
+    lat: row.lat,
+    lon: row.lon,
+    pointCount: row.point_count,
+    sessionCount: row.session_count,
   }));
 }
 

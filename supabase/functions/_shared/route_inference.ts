@@ -1,4 +1,4 @@
-import { latLngToCell } from 'npm:h3-js';
+import { cellToLatLng, gridPathCells, latLngToCell } from 'npm:h3-js';
 
 export type RoutePoint = {
   sessionId: string;
@@ -73,7 +73,7 @@ const minCellSessionCount = 1;
 const minTransitionCount = 1;
 const minTransitionSessionCount = 1;
 const recommendedConfidence = 0.70;
-const recommendedSessionCount = 3;
+const recommendedSessionCount = 5;
 const maxRecommendedBranchAmbiguity = 0.30;
 const maxRecommendedRejectedPointRate = 0.30;
 const minRecommendedGpsQuality = 0.70;
@@ -194,19 +194,71 @@ export function inferCanonicalRoute(
 
 // Build a single-session hitmap from raw GPS points.
 // Returns public types suitable for accumulation into trail_cells / trail_cell_transitions.
+// Intermediate H3 cells along each GPS segment are filled via gridPathCells so
+// the stored cells represent the full path, not just sampled vertices.
 export function buildSessionHitmap(
   points: RoutePoint[],
 ): { cells: TrailCell[]; transitions: TrailTransition[] } {
   if (points.length === 0) {
     return { cells: [], transitions: [] };
   }
-  const sessions = groupBySession(points);
+  const sessions = groupBySession(expandWithGridPath(points));
   const rawCells = buildCells(sessions);
   const rawTransitions = buildTransitions(sessions);
   return {
     cells: [...rawCells.values()].map(publicCell),
     transitions: [...rawTransitions.values()].map(publicTransition),
   };
+}
+
+// Inserts virtual RoutePoints for every H3 cell between consecutive GPS samples.
+// This ensures the hitmap covers the full traversed path, not just measured vertices.
+function expandWithGridPath(points: RoutePoint[]): RoutePoint[] {
+  const bySession = new Map<string, RoutePoint[]>();
+  for (const pt of points) {
+    const list = bySession.get(pt.sessionId) ?? [];
+    list.push(pt);
+    bySession.set(pt.sessionId, list);
+  }
+
+  const result: RoutePoint[] = [];
+  for (const sessionPoints of bySession.values()) {
+    const ordered = [...sessionPoints].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
+    for (let i = 0; i < ordered.length; i++) {
+      result.push(ordered[i]);
+      if (i === ordered.length - 1) continue;
+
+      const cur = ordered[i];
+      const next = ordered[i + 1];
+      const fromKey = pointToCellKey(cur.lat, cur.lon);
+      const toKey = pointToCellKey(next.lat, next.lon);
+      if (fromKey === toKey) continue;
+
+      try {
+        const path = gridPathCells(fromKey, toKey);
+        // Intermediate cells only (first = fromKey, last = toKey — already recorded)
+        for (let j = 1; j < path.length - 1; j++) {
+          const t = j / (path.length - 1);
+          const [lat, lon] = cellToLatLng(path[j]);
+          result.push({
+            sessionId: cur.sessionId,
+            recordedAt: cur.recordedAt,
+            lat,
+            lon,
+            accuracy: cur.accuracy,
+            altitude:
+              cur.altitude !== null && next.altitude !== null
+                ? cur.altitude + (next.altitude - cur.altitude) * t
+                : cur.altitude,
+            sequenceIndex: cur.sequenceIndex + t,
+          });
+        }
+      } catch {
+        // gridPathCells fails for very distant cells (different H3 base cells); skip
+      }
+    }
+  }
+  return result;
 }
 
 // Infer a canonical route from pre-accumulated cells and transitions (e.g. from trail_cells DB table).

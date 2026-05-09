@@ -3,21 +3,28 @@ import Feature from 'ol/Feature';
 import Map from 'ol/Map';
 import View from 'ol/View';
 import LineString from 'ol/geom/LineString';
+import Point from 'ol/geom/Point';
+import Polygon from 'ol/geom/Polygon';
 import TileLayer from 'ol/layer/Tile';
 import VectorLayer from 'ol/layer/Vector';
 import { fromLonLat, transformExtent } from 'ol/proj';
 import OSM from 'ol/source/OSM';
 import VectorSource from 'ol/source/Vector';
 import XYZ from 'ol/source/XYZ';
-import { Stroke, Style } from 'ol/style';
+import { Fill, Stroke, Style } from 'ol/style';
+import { cellToBoundary, latLngToCell } from 'h3-js';
 import 'ol/ol.css';
 
-import type { GeoJsonLineString, RouteState } from '../data/readModels';
+import type { CandidateCell, GeoJsonLineString, RouteState } from '../data/readModels';
+
+type RouteOverlay = { geometry: GeoJsonLineString; routeState: RouteState };
 
 type OperatorRouteMapProps = {
   geometry: GeoJsonLineString | null;
   routeState: RouteState;
   bbox?: [number, number, number, number] | null;
+  routes?: RouteOverlay[];
+  cells?: CandidateCell[];
 };
 
 const routeColors: Record<RouteState, string> = {
@@ -30,11 +37,7 @@ type RouteMapLayerId = 'map' | 'satellite';
 
 const mapLayers: Record<
   RouteMapLayerId,
-  {
-    label: string;
-    attribution: string;
-    createSource: () => OSM | XYZ;
-  }
+  { label: string; attribution: string; createSource: () => OSM | XYZ }
 > = {
   map: {
     label: 'Map',
@@ -53,45 +56,127 @@ const mapLayers: Record<
   },
 };
 
-export function OperatorRouteMap({ geometry, routeState, bbox }: OperatorRouteMapProps) {
+function zoomToH3Res(zoom: number): number {
+  if (zoom < 9)  return 6;
+  if (zoom < 10) return 7;
+  if (zoom < 11) return 8;
+  if (zoom < 12) return 9;
+  if (zoom < 13) return 10;
+  return 11;
+}
+
+
+function buildCellFeatures(cells: CandidateCell[], zoom: number): Feature<Polygon>[] {
+  const res = zoomToH3Res(zoom);
+
+  // Re-derive key at display resolution so cells aggregate correctly when zoomed out
+  const aggregated: Record<string, number> = {};
+  for (const cell of cells) {
+    const key = latLngToCell(cell.lat, cell.lon, res);
+    aggregated[key] = (aggregated[key] ?? 0) + cell.sessionCount;
+  }
+
+  const maxCount = Math.max(...Object.values(aggregated), 1);
+  return Object.entries(aggregated).map(([key, count]) => {
+    const boundary = cellToBoundary(key, true);
+    const ring = boundary.map(([lon, lat]) => fromLonLat([lon, lat]));
+    const feature = new Feature(new Polygon([ring]));
+    const opacity = 0.25 + 0.65 * (count / maxCount);
+    feature.setStyle(new Style({
+      fill: new Fill({ color: `rgba(255, 140, 0, ${opacity.toFixed(2)})` }),
+      stroke: new Stroke({ color: 'rgba(200, 100, 0, 0.4)', width: 1 }),
+    }));
+    return feature;
+  });
+}
+
+export function OperatorRouteMap({ geometry, routeState, bbox, routes, cells }: OperatorRouteMapProps) {
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const [selectedLayer, setSelectedLayer] = useState<RouteMapLayerId>('map');
   const layerConfig = mapLayers[selectedLayer];
 
   useEffect(() => {
     if (!mapElementRef.current) return undefined;
-    if (geometry === null && !bbox) return undefined;
+    const hasRoutes = (routes?.length ?? 0) > 0;
+    const hasCells = (cells?.length ?? 0) > 0;
+    if (geometry === null && !bbox && !hasRoutes && !hasCells) return undefined;
 
-    const layers = [new TileLayer({ source: layerConfig.createSource() })];
     const view = new View({ center: [0, 0], zoom: 2 });
-    const map = new Map({ target: mapElementRef.current, layers, view });
+    const map = new Map({
+      target: mapElementRef.current,
+      layers: [new TileLayer({ source: layerConfig.createSource() })],
+      view,
+    });
 
-    if (geometry !== null) {
+    let extentFitSource: VectorSource | null = null;
+
+    // ── Cell heatmap (rendered below route lines) ─────────────────────────────
+    let cellSource: VectorSource | null = null;
+    if (hasCells) {
+      cellSource = new VectorSource();
+      map.addLayer(new VectorLayer({ source: cellSource }));
+
+      if (!bbox && !hasRoutes) {
+        extentFitSource = new VectorSource({
+          features: cells!.map((c) => new Feature(new Point(fromLonLat([c.lon, c.lat])))),
+        });
+      }
+    }
+
+    // ── Route lines (rendered on top of heatmap) ──────────────────────────────
+    if (hasRoutes) {
+      const allFeatures: Feature<LineString>[] = [];
+      for (const route of routes!) {
+        const coords = route.geometry.coordinates.map(([lon, lat]) => fromLonLat([lon, lat]));
+        const line = new LineString(coords);
+        const feature = new Feature(line);
+        allFeatures.push(feature);
+        map.addLayer(new VectorLayer({
+          source: new VectorSource({ features: [feature] }),
+          style: new Style({ stroke: new Stroke({ color: routeColors[route.routeState], width: 3 }) }),
+        }));
+      }
+      if (!bbox) extentFitSource = new VectorSource({ features: allFeatures });
+    } else if (geometry !== null) {
       const coordinates = geometry.coordinates.map(([lon, lat]) => fromLonLat([lon, lat]));
       const line = new LineString(coordinates);
-      const routeFeature = new Feature({ geometry: line });
-      const vectorSource = new VectorSource({ features: [routeFeature] });
-      const vectorLayer = new VectorLayer({
-        source: vectorSource,
-        style: new Style({
-          stroke: new Stroke({ color: routeColors[routeState], width: 5 }),
-        }),
-      });
-      map.addLayer(vectorLayer);
-      map.getView().fit(line.getExtent(), { padding: [32, 32, 32, 32], maxZoom: 16 });
-    } else if (bbox) {
+      const feature = new Feature(line);
+      const source = new VectorSource({ features: [feature] });
+      map.addLayer(new VectorLayer({
+        source,
+        style: new Style({ stroke: new Stroke({ color: routeColors[routeState], width: 3 }) }),
+      }));
+      if (!bbox) extentFitSource = source;
+    }
+
+    // ── View fitting ──────────────────────────────────────────────────────────
+    if (bbox) {
       const extent = transformExtent(
         [bbox[0], bbox[1], bbox[2], bbox[3]],
         'EPSG:4326',
         'EPSG:3857',
       );
       map.getView().fit(extent, { padding: [24, 24, 24, 24], maxZoom: 15 });
+    } else if (extentFitSource) {
+      const ext = extentFitSource.getExtent();
+      if (ext) map.getView().fit(ext, { padding: [32, 32, 32, 32], maxZoom: 16 });
+    }
+
+    // ── Cell render + zoom-reactive re-render ─────────────────────────────────
+    if (cellSource) {
+      const renderCells = () => {
+        const zoom = map.getView().getZoom() ?? 12;
+        cellSource!.clear();
+        cellSource!.addFeatures(buildCellFeatures(cells ?? [], zoom));
+      };
+      renderCells();
+      map.on('moveend', renderCells);
     }
 
     return () => { map.setTarget(undefined); };
-  }, [geometry, bbox, layerConfig, routeState]);
+  }, [geometry, bbox, routes, cells, layerConfig, routeState]);
 
-  if (geometry === null && !bbox) {
+  if (geometry === null && !bbox && !(routes?.length) && !(cells?.length)) {
     return (
       <div className="route-map-empty">
         <strong>No route geometry</strong>

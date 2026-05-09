@@ -1,12 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   type CandidateCluster,
   type PromoteCandidateClusterResult,
+  fetchCandidateCells,
   fetchCandidateClusters,
+  fetchTrailCells,
   promoteCandidateCluster,
   triggerMatchAndAggregate,
 } from '../data/operationsRepository';
+import { type CandidateCell, type OperatorRouteDetail } from '../data/readModels';
+import { fetchMountainRouteDetails } from '../data/routesRepository';
+
+const OperatorRouteMap = lazy(() =>
+  import('../components/OperatorRouteMap').then((m) => ({ default: m.OperatorRouteMap })),
+);
 
 type PromoteState =
   | { status: 'idle' }
@@ -22,6 +30,9 @@ export function DiscoveryPage() {
   const [modalMountainId, setModalMountainId] = useState<string | null>(null);
   const [routeName, setRouteName] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const [selectedMountainId, setSelectedMountainId] = useState<string | null>(null);
+  const [selectedCells, setSelectedCells] = useState<CandidateCell[]>([]);
+  const [selectedRoutes, setSelectedRoutes] = useState<OperatorRouteDetail[]>([]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -33,11 +44,43 @@ export function DiscoveryPage() {
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
+    if (selectedMountainId === null) {
+      setSelectedCells([]);
+      setSelectedRoutes([]);
+      return;
+    }
+    let cancelled = false;
+    Promise.all([
+      fetchCandidateCells(selectedMountainId),
+      fetchTrailCells(selectedMountainId),
+      fetchMountainRouteDetails(selectedMountainId),
+    ]).then(([candidateCells, trailCells, routes]) => {
+      if (!cancelled) {
+        setSelectedCells([...trailCells, ...candidateCells]);
+        setSelectedRoutes(routes);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setSelectedCells([]);
+        setSelectedRoutes([]);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [selectedMountainId]);
+
+  useEffect(() => {
     if (modalMountainId !== null) {
       setRouteName('');
       setTimeout(() => nameInputRef.current?.focus(), 50);
     }
   }, [modalMountainId]);
+
+  const mapRoutes = useMemo(
+    () => selectedRoutes
+      .filter((r) => r.trailGeoJson !== null)
+      .map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState })),
+    [selectedRoutes],
+  );
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -65,7 +108,7 @@ export function DiscoveryPage() {
   }
 
   return (
-    <div>
+    <>
       <div className="page-header">
         <h2>Route Discovery</h2>
         <span className="page-badge">Operator only</span>
@@ -101,41 +144,88 @@ export function DiscoveryPage() {
         </div>
       )}
 
-      {loading ? (
-        <p style={{ color: 'var(--text-3)', fontSize: 13, marginTop: 24 }}>Loading…</p>
-      ) : clusters.length === 0 ? (
-        <EmptyState onScan={handleRefresh} scanning={refreshing} />
-      ) : (
+      <div className="route-layout">
         <div className="table-panel">
-          <div className="table-panel-header">
-            <span className="table-panel-title">Candidate clusters</span>
-            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-              {clusters.length} mountain{clusters.length !== 1 ? 's' : ''} with unmatched GPS data
-            </span>
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Mountain</th>
-                <th>Cells</th>
-                <th>Session contributions</th>
-                <th>Last evidence</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {clusters.map((c) => (
-                <ClusterRow
-                  key={c.mountainId}
-                  cluster={c}
-                  promoting={promote.status === 'pending' && promote.mountainId === c.mountainId}
-                  onPromote={() => setModalMountainId(c.mountainId)}
-                />
-              ))}
-            </tbody>
-          </table>
+          {loading ? (
+            <p style={{ color: 'var(--text-3)', fontSize: 13, padding: 16 }}>Loading…</p>
+          ) : clusters.length === 0 ? (
+            <EmptyState onScan={handleRefresh} scanning={refreshing} />
+          ) : (
+            <>
+              <div className="table-panel-header">
+                <span className="table-panel-title">Candidate clusters</span>
+                <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                  {clusters.length} mountain{clusters.length !== 1 ? 's' : ''} with unmatched GPS data
+                </span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Mountain</th>
+                    <th>Cells</th>
+                    <th>Session contributions</th>
+                    <th>Last evidence</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clusters.map((c) => (
+                    <ClusterRow
+                      key={c.mountainId}
+                      cluster={c}
+                      selected={selectedMountainId === c.mountainId}
+                      promoting={promote.status === 'pending' && promote.mountainId === c.mountainId}
+                      onSelect={() => setSelectedMountainId((prev) => prev === c.mountainId ? null : c.mountainId)}
+                      onPromote={() => setModalMountainId(c.mountainId)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
-      )}
+
+        <div className="route-detail-panel">
+          <div className="card">
+            <div className="card-title">
+              {selectedMountainId
+                ? `Map preview — ${selectedMountainId}`
+                : 'Select a mountain'}
+            </div>
+            {selectedMountainId ? (
+              <Suspense
+                fallback={
+                  <div className="route-map-empty">
+                    <strong>Loading map</strong>
+                    <span>Preparing map preview.</span>
+                  </div>
+                }
+              >
+                <OperatorRouteMap
+                  geometry={null}
+                  routeState="none"
+                  routes={mapRoutes}
+                  cells={selectedCells}
+                />
+              </Suspense>
+            ) : (
+              <div className="route-map-empty">
+                <strong>No mountain selected</strong>
+                <span>Click a row to preview its H3 heatmap and routes.</span>
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-title">About candidate clusters</div>
+            <ul className="bullet-list">
+              <li>H3 cells with GPS data not yet matched to a route</li>
+              <li>Orange intensity = session count contribution</li>
+              <li>Promote to create a new route from the cluster</li>
+            </ul>
+          </div>
+        </div>
+      </div>
 
       {modalMountainId !== null && (
         <PromoteModal
@@ -147,17 +237,21 @@ export function DiscoveryPage() {
           onCancel={() => setModalMountainId(null)}
         />
       )}
-    </div>
+    </>
   );
 }
 
 function ClusterRow({
   cluster,
+  selected,
   promoting,
+  onSelect,
   onPromote,
 }: {
   cluster: CandidateCluster;
+  selected: boolean;
   promoting: boolean;
+  onSelect: () => void;
   onPromote: () => void;
 }) {
   const relativeTime = cluster.latestEvidenceAt
@@ -165,9 +259,11 @@ function ClusterRow({
     : '—';
 
   return (
-    <tr>
+    <tr className={selected ? 'selected-row' : ''}>
       <td>
-        <span className="cell-name">{cluster.mountainId}</span>
+        <button className="link-button" type="button" onClick={onSelect}>
+          <span className="cell-name">{cluster.mountainId}</span>
+        </button>
       </td>
       <td>
         <span className="cell-mono">{cluster.cellCount}</span>

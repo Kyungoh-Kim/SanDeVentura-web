@@ -55,3 +55,11 @@ export type OperatorSessionIngestion = {
   rejectedPointCount: number;
   lastError: string | null;
 };
+
+export type CandidateCell = {
+  cellKey: string;
+  lat: number;
+  lon: number;
+  pointCount: number;
+  sessionCount: number;
+};

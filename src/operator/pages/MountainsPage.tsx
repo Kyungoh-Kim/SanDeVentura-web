@@ -1,12 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 
-import { type Mountain } from '../data/readModels';
+import { type CandidateCell, type Mountain, type OperatorRouteDetail } from '../data/readModels';
 import {
   fetchMountains,
   formatBbox,
   parseBbox,
   updateMountainBbox,
 } from '../data/mountainsRepository';
+import { fetchCandidateCells, fetchTrailCells } from '../data/operationsRepository';
+import { fetchMountainRouteDetails } from '../data/routesRepository';
 
 const OperatorRouteMap = lazy(() =>
   import('../components/OperatorRouteMap').then((m) => ({ default: m.OperatorRouteMap })),
@@ -26,6 +28,8 @@ export function MountainsPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [previewRoutes, setPreviewRoutes] = useState<OperatorRouteDetail[]>([]);
+  const [previewCells, setPreviewCells] = useState<CandidateCell[]>([]);
 
   const loadMountains = useCallback(() => {
     fetchMountains()
@@ -36,6 +40,24 @@ export function MountainsPage() {
   useEffect(() => {
     loadMountains();
   }, [loadMountains]);
+
+  useEffect(() => {
+    if (previewId === null) { setPreviewRoutes([]); setPreviewCells([]); return; }
+    let cancelled = false;
+    Promise.all([
+      fetchMountainRouteDetails(previewId),
+      fetchCandidateCells(previewId),
+      fetchTrailCells(previewId),
+    ]).then(([routes, candidateCells, trailCells]) => {
+      if (!cancelled) {
+        setPreviewRoutes(routes);
+        setPreviewCells([...trailCells, ...candidateCells]);
+      }
+    }).catch(() => {
+      if (!cancelled) { setPreviewRoutes([]); setPreviewCells([]); }
+    });
+    return () => { cancelled = true; };
+  }, [previewId]);
 
   function startEdit(mountain: Mountain) {
     const bbox = parseBbox(mountain.bbox);
@@ -223,6 +245,10 @@ export function MountainsPage() {
                   geometry={null}
                   routeState="none"
                   bbox={previewBbox}
+                  routes={previewRoutes
+                    .filter((r) => r.trailGeoJson !== null)
+                    .map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState }))}
+                  cells={previewCells}
                 />
               </Suspense>
             ) : (

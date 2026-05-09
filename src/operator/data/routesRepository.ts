@@ -168,6 +168,24 @@ export async function fetchRouteDetail(
   };
 }
 
+export async function fetchMountainRouteDetails(
+  mountainId: string,
+): Promise<OperatorRouteDetail[]> {
+  if (supabase === null) return [];
+
+  const { data, error } = await supabase
+    .from('operator_route_coverage')
+    .select('route_id')
+    .eq('mountain_id', mountainId)
+    .not('route_id', 'is', null);
+
+  if (error) throw new Error(error.message);
+
+  const routeIds = ((data ?? []) as Array<{ route_id: string }>).map((r) => r.route_id);
+  const details = await Promise.all(routeIds.map((id) => fetchRouteDetail(id)));
+  return details.filter((d): d is OperatorRouteDetail => d !== null);
+}
+
 export async function fetchSessionIngestion(): Promise<OperatorSessionIngestion[] | null> {
   if (supabase === null) {
     return null;

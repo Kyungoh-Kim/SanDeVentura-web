@@ -333,6 +333,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  overflow-x: auto;
   box-shadow: var(--shadow);
 }
 
@@ -803,19 +804,20 @@ tr:hover td {
 .route-layout {
   display: grid;
   gap: 14px;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   align-items: start;
 }
 
 .route-detail-panel {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .route-detail-metrics {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   margin-bottom: 12px;
 }
 
@@ -1020,6 +1022,4 @@ tr:hover td {
   .quality-layout { grid-template-columns: 1fr; }
   .field-step-grid,
   .mountain-cards { grid-template-columns: 1fr; }
-  .route-detail-metrics { grid-template-columns: repeat(2, 1fr); }
-  .table-panel { overflow-x: auto; }
 }
