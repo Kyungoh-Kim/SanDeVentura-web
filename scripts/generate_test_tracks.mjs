@@ -63,7 +63,7 @@ const ROUTES = {
   'dobong-west': {
     mountainId: 'dobong',
     displayName: '도봉산 서쪽 능선',
-    sessions: 2,
+    sessions: 5,
     waypoints: [
       [127.00200, 37.68200, 270], [127.00500, 37.68400, 330],
       [127.00820, 37.68520, 380], [127.01100, 37.68620, 430],
@@ -149,18 +149,12 @@ function toTimestamp(baseDate, elapsedSec) {
 function buildKml(routeId, routeDef, sessionIdx, points, startDate) {
   const sessionNum = String(sessionIdx + 1).padStart(2, '0');
   const name = `${routeDef.displayName} — 세션 ${sessionNum}`;
+  const durationMin = Math.round(points[points.length - 1].elapsedSec / 60);
 
   const whens = points.map(p => `      <when>${toTimestamp(startDate, p.elapsedSec)}</when>`).join('\n');
   const coords = points.map(p =>
     `      <gx:coord>${p.lon.toFixed(7)} ${p.lat.toFixed(7)} ${p.alt.toFixed(1)}</gx:coord>`
   ).join('\n');
-
-  // Also build a simple LineString for apps that don't support gx:Track
-  const lineCoords = points
-    .map(p => `${p.lon.toFixed(7)},${p.lat.toFixed(7)},${p.alt.toFixed(1)}`)
-    .join(' ');
-
-  const durationMin = Math.round(points[points.length - 1].elapsedSec / 60);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2"
@@ -168,15 +162,9 @@ function buildKml(routeId, routeDef, sessionIdx, points, startDate) {
   <Document>
     <name>${name}</name>
     <description>Route: ${routeId} | Mountain: ${routeDef.mountainId} | Session: ${sessionNum}/${routeDef.sessions} | Duration: ~${durationMin}min | GPS interval: ${GPS_INTERVAL_SEC}s</description>
-
     <Style id="trackLine">
-      <LineStyle>
-        <color>ff0080ff</color>
-        <width>3</width>
-      </LineStyle>
+      <LineStyle><color>ff0080ff</color><width>3</width></LineStyle>
     </Style>
-
-    <!-- gx:Track (timestamps + coords for GPS simulation) -->
     <Placemark>
       <name>GPS Track</name>
       <styleUrl>#trackLine</styleUrl>
@@ -186,32 +174,38 @@ ${whens}
 ${coords}
       </gx:Track>
     </Placemark>
-
-    <!-- LineString (fallback for simple viewers) -->
-    <Placemark>
-      <name>Route Path</name>
-      <styleUrl>#trackLine</styleUrl>
-      <LineString>
-        <altitudeMode>absolute</altitudeMode>
-        <coordinates>${lineCoords}</coordinates>
-      </LineString>
-    </Placemark>
-
-    <!-- Start/End markers -->
-    <Placemark>
-      <name>출발</name>
-      <Point>
-        <coordinates>${points[0].lon.toFixed(7)},${points[0].lat.toFixed(7)},${points[0].alt.toFixed(1)}</coordinates>
-      </Point>
-    </Placemark>
-    <Placemark>
-      <name>도착</name>
-      <Point>
-        <coordinates>${points[points.length-1].lon.toFixed(7)},${points[points.length-1].lat.toFixed(7)},${points[points.length-1].alt.toFixed(1)}</coordinates>
-      </Point>
-    </Placemark>
   </Document>
 </kml>`;
+}
+
+function buildGpx(routeId, routeDef, sessionIdx, points, startDate) {
+  const sessionNum = String(sessionIdx + 1).padStart(2, '0');
+  const name = `${routeDef.displayName} — 세션 ${sessionNum}`;
+  const durationMin = Math.round(points[points.length - 1].elapsedSec / 60);
+
+  const trkpts = points.map(p =>
+    `    <trkpt lat="${p.lat.toFixed(7)}" lon="${p.lon.toFixed(7)}">\n` +
+    `      <ele>${p.alt.toFixed(1)}</ele>\n` +
+    `      <time>${toTimestamp(startDate, p.elapsedSec)}</time>\n` +
+    `    </trkpt>`
+  ).join('\n');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="SanDeVentura"
+  xmlns="http://www.topografix.com/GPX/1/1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>${name}</name>
+    <desc>Route: ${routeId} | Mountain: ${routeDef.mountainId} | Session: ${sessionNum}/${routeDef.sessions} | Duration: ~${durationMin}min | GPS interval: ${GPS_INTERVAL_SEC}s</desc>
+  </metadata>
+  <trk>
+    <name>${name}</name>
+    <trkseg>
+${trkpts}
+    </trkseg>
+  </trk>
+</gpx>`;
 }
 
 // ── Generate files ────────────────────────────────────────────────────────────
@@ -230,21 +224,22 @@ for (const [routeId, routeDef] of Object.entries(ROUTES)) {
     const points = generateTrack(routeDef.waypoints, si, noiseSeed);
     const startDate = new Date(BASE_DATE.getTime() + (totalFiles * 86_400_000));
     const kml = buildKml(routeId, routeDef, si, points, startDate);
+    const gpx = buildGpx(routeId, routeDef, si, points, startDate);
 
     const sessionNum = String(si + 1).padStart(2, '0');
-    const filename = `session-${sessionNum}.kml`;
-    writeFileSync(join(routeDir, filename), kml, 'utf8');
+    writeFileSync(join(routeDir, `session-${sessionNum}.kml`), kml, 'utf8');
+    writeFileSync(join(routeDir, `session-${sessionNum}.gpx`), gpx, 'utf8');
 
     const durationMin = Math.round(points[points.length - 1].elapsedSec / 60);
-    console.log(`  ✓ ${filename}  (${points.length} pts, ~${durationMin}min)`);
+    console.log(`  ✓ session-${sessionNum}  (${points.length} pts, ~${durationMin}min)`);
     totalFiles++;
   }
 }
 
-console.log(`\n✓ ${totalFiles} KML files written to test-tracks/`);
+console.log(`\n✓ ${totalFiles} sessions written to test-tracks/ (.kml + .gpx each)`);
 console.log(`\nTesting workflow:`);
 console.log(`  1. Upload sessions in order (session-01 → session-02 → ...)`);
-console.log(`  2. After each upload, trigger "Scan for candidates" in operator dashboard`);
+console.log(`  2. After each upload, trigger "Recalculate hitmaps" in operator dashboard`);
 console.log(`  3. Watch route confidence build up on Routes page`);
 console.log(`  sorak-main needs 5 sessions to reach recommended confidence`);
 console.log(`  dobong-main needs 4 sessions`);
