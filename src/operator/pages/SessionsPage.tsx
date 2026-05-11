@@ -290,6 +290,7 @@ export function SessionsPage() {
                         <div>
                           <strong>{route.routeDisplayName}</strong>
                           <span>{route.routeId}</span>
+                          <span>{formatRouteMatchDiagnostics(route)}</span>
                         </div>
                         <div className="detail-metrics">
                           <b>{route.cellCount}</b> cells
@@ -415,6 +416,20 @@ function formatCellsAndPoints(cells: number, points: number | null): string {
   return points === null
     ? `${cells.toLocaleString()} / -`
     : `${cells.toLocaleString()} / ${points.toLocaleString()}`;
+}
+
+function formatRouteMatchDiagnostics(route: OperatorSessionRouteAttribution): string {
+  const parts = [route.matchMethod.replaceAll('_', ' ')];
+  if (route.frechetDistance !== null) {
+    parts.push(`${Math.round(route.frechetDistance)}m Frechet`);
+  }
+  if (route.overlapRatio !== null) {
+    parts.push(`${Math.round(route.overlapRatio * 100)}% overlap`);
+  }
+  if (route.scoreMargin !== null && Number.isFinite(route.scoreMargin)) {
+    parts.push(`${Math.round(route.scoreMargin)}m margin`);
+  }
+  return parts.join(' / ');
 }
 
 function sessionCellToMapCell(cell: OperatorSessionCellAttribution): CandidateCell | null {

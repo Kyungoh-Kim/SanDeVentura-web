@@ -72,6 +72,10 @@ export async function handleEvaluateRouteSplits(
           branchTransitions,
           candidate.cfgConfidence,
           candidate.crossBranchRatio,
+          candidate.frechetDistance,
+          candidate.matchScore,
+          candidate.clusterWeight,
+          candidate.autoDecision,
           candidate.contributingSessions,
         );
 
@@ -216,6 +220,11 @@ async function recordAudit(
     branch_route_id: plan.valid ? plan.newBranchRouteId : null,
     cfg_confidence: plan.cfgConfidence,
     cross_branch_ratio: plan.crossBranchRatio,
+    invalid_reason: plan.valid ? null : plan.invalidReason ?? 'unknown',
+    match_score: plan.matchScore,
+    frechet_distance: plan.frechetDistance,
+    cluster_weight: plan.clusterWeight,
+    auto_decision: plan.autoDecision,
     affected_session_count: plan.affectedSessions.length,
     dry_run: dryRun,
   });

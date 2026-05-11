@@ -1,4 +1,4 @@
-import { cellToLatLng, gridPathCells, latLngToCell } from 'npm:h3-js';
+import { cellToLatLng, gridDisk, gridPathCells, latLngToCell } from 'npm:h3-js';
 
 export type RoutePoint = {
   sessionId: string;
@@ -42,6 +42,7 @@ export type CanonicalRoute = {
   cells: TrailCell[];
   transitions: TrailTransition[];
   line: Array<{ lat: number; lon: number }>;
+  cellKeys: string[];
   confidence: number;
   confidenceLevel: 'none' | 'reference' | 'recommended';
   sessionCount: number;
@@ -67,6 +68,26 @@ type Component = {
   score: number;
 };
 
+export type RouteMatchMetrics = {
+  frechetDistance: number;
+  overlapRatio: number;
+  score: number;
+};
+
+export type RouteFitSplit = {
+  routeCells: TrailCell[];
+  candidateCells: TrailCell[];
+};
+
+export type CandidateResidualCluster = {
+  cellKeys: Set<string>;
+  sessionCount: number;
+  contributingSessions: string[];
+  cells: TrailCell[];
+  transitions: TrailTransition[];
+  clusterWeight: number;
+};
+
 export const H3_RESOLUTION = 11;
 const minCellPointCount = 2;
 const minCellSessionCount = 1;
@@ -78,6 +99,8 @@ const maxRecommendedBranchAmbiguity = 0.30;
 const maxRecommendedRejectedPointRate = 0.30;
 const minRecommendedGpsQuality = 0.70;
 const minRecommendedRecency = 0.50;
+const neighborSupportWeight = 0.35;
+const smoothingClampMeters = 20;
 
 export function inferCanonicalRoute(
   points: RoutePoint[],
@@ -117,6 +140,7 @@ export function inferCanonicalRoute(
       cells,
       transitions,
       line: [],
+      cellKeys: [],
       confidence: 0,
       confidenceLevel: 'none',
       sessionCount: sessions.size,
@@ -129,16 +153,19 @@ export function inferCanonicalRoute(
   }
 
   const selected = selectPath(component);
-  const line = selected.cellKeys
+  const pathCells = selected.cellKeys
     .map((cellKey) => cellByKey.get(cellKey))
     .filter((cell): cell is CellSupport => cell !== undefined)
-    .map((cell) => ({ lat: cell.lat, lon: cell.lon }));
+    .map(publicCell);
+  const supportMap = new Map(component.cells.map((cell) => [cell.cellKey, publicCell(cell)]));
+  const line = smoothCanonicalLine(pathCells, supportMap);
 
   if (line.length < 2) {
     return routeFromScores({
       cells,
       transitions,
       line: [],
+      cellKeys: [],
       confidence: 0,
       confidenceLevel: 'none',
       sessionCount: sessions.size,
@@ -172,6 +199,7 @@ export function inferCanonicalRoute(
     cells: component.cells.map(publicCell),
     transitions: component.transitions.map(publicTransition),
     line,
+    cellKeys: selected.cellKeys,
     confidence,
     confidenceLevel: isRecommended({
       confidence,
@@ -198,16 +226,20 @@ export function inferCanonicalRoute(
 // the stored cells represent the full path, not just sampled vertices.
 export function buildSessionHitmap(
   points: RoutePoint[],
-): { cells: TrailCell[]; transitions: TrailTransition[] } {
+): { cells: TrailCell[]; transitions: TrailTransition[]; path: TrailCell[] } {
   if (points.length === 0) {
-    return { cells: [], transitions: [] };
+    return { cells: [], transitions: [], path: [] };
   }
-  const sessions = groupBySession(expandWithGridPath(points));
+  const expanded = expandWithGridPath(points);
+  const sessions = groupBySession(expanded);
   const rawCells = buildCells(sessions);
   const rawTransitions = buildTransitions(sessions);
+  const cells = [...rawCells.values()].map(publicCell);
+  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
   return {
-    cells: [...rawCells.values()].map(publicCell),
+    cells,
     transitions: [...rawTransitions.values()].map(publicTransition),
+    path: buildOrderedCellPath(expanded, cellByKey),
   };
 }
 
@@ -309,6 +341,7 @@ export function inferCanonicalRouteFromCells(
       cells: cells.map(publicCell),
       transitions: transitions.map(publicTransition),
       line: [],
+      cellKeys: [],
       confidence: 0,
       confidenceLevel: 'none',
       sessionCount: resolvedSessionCount,
@@ -321,16 +354,19 @@ export function inferCanonicalRouteFromCells(
   }
 
   const selected = selectPath(component);
-  const line = selected.cellKeys
+  const pathCells = selected.cellKeys
     .map((cellKey) => cellByKey.get(cellKey))
     .filter((cell): cell is CellSupport => cell !== undefined)
-    .map((cell) => ({ lat: cell.lat, lon: cell.lon }));
+    .map(publicCell);
+  const supportMap = new Map(component.cells.map((cell) => [cell.cellKey, publicCell(cell)]));
+  const line = smoothCanonicalLine(pathCells, supportMap);
 
   if (line.length < 2) {
     return routeFromScores({
       cells: cells.map(publicCell),
       transitions: transitions.map(publicTransition),
       line: [],
+      cellKeys: [],
       confidence: 0,
       confidenceLevel: 'none',
       sessionCount: resolvedSessionCount,
@@ -364,6 +400,7 @@ export function inferCanonicalRouteFromCells(
     cells: component.cells.map(publicCell),
     transitions: component.transitions.map(publicTransition),
     line,
+    cellKeys: selected.cellKeys,
     confidence,
     confidenceLevel: isRecommended({
       confidence,
@@ -389,6 +426,192 @@ export function lineStringWkt(line: Array<{ lat: number; lon: number }>): string
     return null;
   }
   return `LINESTRING(${line.map((point) => `${point.lon} ${point.lat}`).join(',')})`;
+}
+
+export function weightedDiscreteFrechet(
+  sessionPath: TrailCell[],
+  routePath: TrailCell[],
+  supportMap: Map<string, TrailCell> = new Map(),
+): RouteMatchMetrics {
+  if (sessionPath.length === 0 || routePath.length === 0) {
+    return { frechetDistance: Number.POSITIVE_INFINITY, overlapRatio: 0, score: Number.POSITIVE_INFINITY };
+  }
+
+  const cache: number[][] = Array.from(
+    { length: sessionPath.length },
+    () => Array(routePath.length).fill(Number.NaN),
+  );
+
+  const distanceAt = (i: number, j: number): number => {
+    const routeCell = routePath[j];
+    const support = supportStrengthForCell(supportMap.get(routeCell.cellKey) ?? routeCell);
+    const supportDiscount = 1 + Math.min(0.35, Math.log1p(support) / 20);
+    return haversineMeters(
+      sessionPath[i].lat,
+      sessionPath[i].lon,
+      routeCell.lat,
+      routeCell.lon,
+    ) / supportDiscount;
+  };
+
+  const walk = (i: number, j: number): number => {
+    if (Number.isFinite(cache[i][j])) return cache[i][j];
+    const current = distanceAt(i, j);
+    if (i === 0 && j === 0) {
+      cache[i][j] = current;
+    } else if (i > 0 && j === 0) {
+      cache[i][j] = Math.max(walk(i - 1, 0), current);
+    } else if (i === 0 && j > 0) {
+      cache[i][j] = Math.max(walk(0, j - 1), current);
+    } else {
+      cache[i][j] = Math.max(
+        Math.min(walk(i - 1, j), walk(i - 1, j - 1), walk(i, j - 1)),
+        current,
+      );
+    }
+    return cache[i][j];
+  };
+
+  const frechetDistance = walk(sessionPath.length - 1, routePath.length - 1);
+  const routeKeys = new Set(routePath.map((cell) => cell.cellKey));
+  const overlapCount = sessionPath.filter((cell) => routeKeys.has(cell.cellKey)).length;
+  const overlapRatio = overlapCount / Math.max(1, sessionPath.length);
+
+  return {
+    frechetDistance,
+    overlapRatio,
+    score: frechetDistance - overlapRatio * 20,
+  };
+}
+
+export function splitSessionByRouteFit(
+  sessionPath: TrailCell[],
+  routePath: TrailCell[],
+  pathMatchAccepted: boolean,
+  routeDistanceMeters = 45,
+): RouteFitSplit {
+  const routeKeys = new Set(routePath.map((cell) => cell.cellKey));
+  const routeCells: TrailCell[] = [];
+  const candidateCells: TrailCell[] = [];
+
+  for (const cell of sessionPath) {
+    if (routeKeys.has(cell.cellKey)) {
+      routeCells.push(cell);
+      continue;
+    }
+    if (pathMatchAccepted && nearestDistanceMeters(cell, routePath) <= routeDistanceMeters) {
+      routeCells.push(cell);
+      continue;
+    }
+    candidateCells.push(cell);
+  }
+
+  return { routeCells, candidateCells };
+}
+
+export function smoothCanonicalLine(
+  cellPath: TrailCell[],
+  supportMap: Map<string, TrailCell> = new Map(cellPath.map((cell) => [cell.cellKey, cell])),
+): Array<{ lat: number; lon: number }> {
+  if (cellPath.length < 2) {
+    return cellPath.map((cell) => ({ lat: cell.lat, lon: cell.lon }));
+  }
+
+  const weighted = cellPath.map((cell) => {
+    let latSum = cell.lat * supportStrengthForCell(cell);
+    let lonSum = cell.lon * supportStrengthForCell(cell);
+    let weightSum = supportStrengthForCell(cell);
+
+    for (const neighborKey of gridDisk(cell.cellKey, 1)) {
+      if (neighborKey === cell.cellKey) continue;
+      const neighbor = supportMap.get(neighborKey);
+      if (!neighbor) continue;
+      const weight = supportStrengthForCell(neighbor) * neighborSupportWeight;
+      latSum += neighbor.lat * weight;
+      lonSum += neighbor.lon * weight;
+      weightSum += weight;
+    }
+
+    const target = {
+      lat: latSum / Math.max(1, weightSum),
+      lon: lonSum / Math.max(1, weightSum),
+    };
+    return clampPointShift(cell, target, smoothingClampMeters);
+  });
+
+  return chaikinOnce(weighted);
+}
+
+export function clusterCandidateResiduals(
+  cells: TrailCell[],
+  transitions: TrailTransition[],
+  options: { minClusterSessionCount?: number; minClusterCellCount?: number } = {},
+): CandidateResidualCluster[] {
+  const minClusterSessionCount = options.minClusterSessionCount ?? 2;
+  const minClusterCellCount = options.minClusterCellCount ?? 3;
+  if (cells.length === 0) return [];
+
+  const cellMap = new Map(cells.map((cell) => [cell.cellKey, cell]));
+  const visited = new Set<string>();
+  const clusters: CandidateResidualCluster[] = [];
+
+  for (const cell of cells) {
+    if (visited.has(cell.cellKey)) continue;
+    const queue = [cell.cellKey];
+    const keys = new Set<string>();
+
+    while (queue.length > 0) {
+      const key = queue.pop()!;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      keys.add(key);
+      for (const neighbor of gridDisk(key, 1)) {
+        if (neighbor !== key && cellMap.has(neighbor) && !visited.has(neighbor)) {
+          queue.push(neighbor);
+        }
+      }
+      for (const transition of transitions) {
+        if (transition.fromCellKey === key && cellMap.has(transition.toCellKey) && !visited.has(transition.toCellKey)) {
+          queue.push(transition.toCellKey);
+        }
+        if (transition.toCellKey === key && cellMap.has(transition.fromCellKey) && !visited.has(transition.fromCellKey)) {
+          queue.push(transition.fromCellKey);
+        }
+      }
+    }
+
+    const clusterCells = [...keys]
+      .map((key) => cellMap.get(key))
+      .filter((value): value is TrailCell => value !== undefined);
+    const contributingSessions = dedupeStrings(
+      clusterCells.flatMap((clusterCell) => (clusterCell as any).contributingSessions ?? []),
+    );
+    const sessionCount = Math.max(
+      contributingSessions.length,
+      ...clusterCells.map((clusterCell) => clusterCell.sessionCount),
+      0,
+    );
+    if (clusterCells.length < minClusterCellCount || sessionCount < minClusterSessionCount) {
+      continue;
+    }
+
+    const clusterTransitions = transitions.filter((transition) =>
+      keys.has(transition.fromCellKey) && keys.has(transition.toCellKey)
+    );
+    const clusterWeight = sum(clusterCells.map((clusterCell) => clusterCell.pointCount)) +
+      2 * sessionCount;
+
+    clusters.push({
+      cellKeys: keys,
+      sessionCount,
+      contributingSessions,
+      cells: clusterCells,
+      transitions: clusterTransitions,
+      clusterWeight,
+    });
+  }
+
+  return clusters;
 }
 
 export function pointToCellKey(lat: number, lon: number): string {
@@ -514,6 +737,26 @@ function groupBySession(points: RoutePoint[]): Map<string, RoutePoint[]> {
     sessions.set(point.sessionId, existing);
   }
   return sessions;
+}
+
+function buildOrderedCellPath(
+  points: RoutePoint[],
+  cellByKey: Map<string, TrailCell>,
+): TrailCell[] {
+  const ordered = [...points].sort((left, right) =>
+    left.sessionId.localeCompare(right.sessionId) ||
+    left.sequenceIndex - right.sequenceIndex
+  );
+  const path: TrailCell[] = [];
+  let previousKey: string | null = null;
+  for (const point of ordered) {
+    const key = pointToCellKey(point.lat, point.lon);
+    if (key === previousKey) continue;
+    const cell = cellByKey.get(key);
+    if (cell) path.push(cell);
+    previousKey = key;
+  }
+  return path;
 }
 
 // Adapt a public TrailCell (no sessionIds) to CellSupport for use in the path algorithm.
@@ -807,6 +1050,63 @@ function supportStrength(transition: TrailTransition): number {
   return transition.sessionCount * 10 + transition.transitionCount;
 }
 
+function supportStrengthForCell(cell: TrailCell): number {
+  return Math.max(1, cell.pointCount * Math.max(1, cell.sessionCount));
+}
+
+function nearestDistanceMeters(cell: TrailCell, path: TrailCell[]): number {
+  return Math.min(
+    Number.POSITIVE_INFINITY,
+    ...path.map((candidate) =>
+      haversineMeters(cell.lat, cell.lon, candidate.lat, candidate.lon)
+    ),
+  );
+}
+
+function clampPointShift(
+  origin: { lat: number; lon: number },
+  target: { lat: number; lon: number },
+  maxMeters: number,
+): { lat: number; lon: number } {
+  const distance = haversineMeters(origin.lat, origin.lon, target.lat, target.lon);
+  if (distance <= maxMeters || distance === 0) return target;
+  const ratio = maxMeters / distance;
+  return {
+    lat: origin.lat + (target.lat - origin.lat) * ratio,
+    lon: origin.lon + (target.lon - origin.lon) * ratio,
+  };
+}
+
+function chaikinOnce(points: Array<{ lat: number; lon: number }>): Array<{ lat: number; lon: number }> {
+  if (points.length < 3) return points;
+  const smoothed: Array<{ lat: number; lon: number }> = [points[0]];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const current = points[i];
+    const next = points[i + 1];
+    smoothed.push({
+      lat: current.lat * 0.75 + next.lat * 0.25,
+      lon: current.lon * 0.75 + next.lon * 0.25,
+    });
+    smoothed.push({
+      lat: current.lat * 0.25 + next.lat * 0.75,
+      lon: current.lon * 0.25 + next.lon * 0.75,
+    });
+  }
+  smoothed.push(points[points.length - 1]);
+  return smoothed;
+}
+
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6_371_000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 function edgeKey(transition: TrailTransition): string {
   return `${transition.fromCellKey}->${transition.toCellKey}`;
 }
@@ -815,6 +1115,10 @@ function firstCellKey(component: Component): string {
   return component.cells
     .map((cell) => cell.cellKey)
     .sort()[0] ?? '';
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function average(values: number[]): number {
@@ -834,6 +1138,7 @@ function emptyRoute(): CanonicalRoute {
     cells: [],
     transitions: [],
     line: [],
+    cellKeys: [],
     confidence: 0,
     confidenceLevel: 'none',
     sessionCount: 0,

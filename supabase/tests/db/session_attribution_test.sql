@@ -1,6 +1,6 @@
 begin;
 
-select plan(10);
+select plan(11);
 
 select has_table('public', 'session_cell_attributions', 'session cell attribution table exists');
 select has_function(
@@ -154,12 +154,33 @@ select results_eq(
 
 select results_eq(
   $$
-    select route_id, cell_count, point_count, transition_count, attribution_precision
+    select
+      route_id,
+      cell_count,
+      point_count,
+      transition_count,
+      match_method,
+      frechet_distance,
+      overlap_ratio,
+      score_margin,
+      attribution_precision
     from public.operator_session_route_attribution
     where session_id = '33333333-3333-3333-3333-333333333333'
   $$,
-  $$ values ('attribution-main'::text, 2::integer, 5::integer, 0::integer, 'exact'::text) $$,
-  'exact route attribution exposes cell and point counts'
+  $$
+    values (
+      'attribution-main'::text,
+      2::integer,
+      5::integer,
+      0::integer,
+      'exact_overlap'::text,
+      null::double precision,
+      null::double precision,
+      null::double precision,
+      'exact'::text
+    )
+  $$,
+  'exact route attribution exposes counts and match diagnostics'
 );
 
 select results_eq(
@@ -207,6 +228,24 @@ select is_empty(
       and column_name in ('lat', 'lon', 'geom', 'trail_geojson', 'debug_payload_sample')
   $$,
   'operator session attribution views do not expose coordinates or raw payloads'
+);
+
+select results_eq(
+  $$
+    select count(*)::integer
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'route_split_audit'
+      and column_name in (
+        'invalid_reason',
+        'match_score',
+        'frechet_distance',
+        'cluster_weight',
+        'auto_decision'
+      )
+  $$,
+  $$ values (5::integer) $$,
+  'route split audit exposes correction decision diagnostics'
 );
 
 select * from finish();

@@ -311,6 +311,17 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
                     <div style={{ color: 'var(--text-3)' }}>
                       confidence {entry.cfgConfidence?.toFixed(2) ?? '—'} · ratio {entry.crossBranchRatio?.toFixed(2) ?? '—'} · {entry.affectedSessionCount} sessions
                     </div>
+                    <div style={{ color: 'var(--text-3)' }}>
+                      {entry.autoDecision.replace('_', ' ')}
+                      {entry.invalidReason ? ` / ${entry.invalidReason}` : ''}
+                    </div>
+                    <div style={{ color: 'var(--text-3)' }}>
+                      Frechet {formatNullableMeters(entry.frechetDistance)}
+                      {' / '}
+                      score {formatNullableScore(entry.matchScore)}
+                      {' / '}
+                      weight {formatNullableScore(entry.clusterWeight)}
+                    </div>
                     <div style={{ color: 'var(--text-3)' }}>{new Date(entry.decidedAt).toLocaleString()}</div>
                   </div>
                 ))}
@@ -389,6 +400,16 @@ function ScoreRow({
 function formatScore(value: number | null) {
   if (value === null) return '-';
   return value.toFixed(2);
+}
+
+function formatNullableScore(value: number | null) {
+  if (value === null) return '-';
+  return value.toFixed(1);
+}
+
+function formatNullableMeters(value: number | null) {
+  if (value === null) return '-';
+  return `${Math.round(value)}m`;
 }
 
 function formatDate(value: string | null) {

@@ -107,6 +107,11 @@ export type RouteSplitAuditEntry = {
   branchRouteId: string | null;
   cfgConfidence: number | null;
   crossBranchRatio: number | null;
+  invalidReason: string | null;
+  matchScore: number | null;
+  frechetDistance: number | null;
+  clusterWeight: number | null;
+  autoDecision: 'auto_split' | 'review_required';
   affectedSessionCount: number;
   dryRun: boolean;
   decidedAt: string;
@@ -122,6 +127,10 @@ export type EvaluateRouteSplitsResult = {
     invalidReason?: string;
     cfgConfidence: number;
     crossBranchRatio: number;
+    frechetDistance: number | null;
+    matchScore: number | null;
+    clusterWeight: number;
+    autoDecision: 'auto_split' | 'review_required';
     newSegmentBRouteId: string;
     newBranchRouteId: string;
     affectedSessions: string[];
@@ -146,6 +155,11 @@ export async function fetchRouteSplitAudit(limit = 20): Promise<RouteSplitAuditE
     branchRouteId: row.branch_route_id,
     cfgConfidence: row.cfg_confidence,
     crossBranchRatio: row.cross_branch_ratio,
+    invalidReason: row.invalid_reason,
+    matchScore: row.match_score,
+    frechetDistance: row.frechet_distance,
+    clusterWeight: row.cluster_weight,
+    autoDecision: row.auto_decision ?? 'review_required',
     affectedSessionCount: row.affected_session_count,
     dryRun: row.dry_run,
     decidedAt: row.decided_at,

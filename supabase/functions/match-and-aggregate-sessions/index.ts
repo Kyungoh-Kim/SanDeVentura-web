@@ -5,6 +5,9 @@ import {
   buildSessionHitmap,
   inferCanonicalRouteFromCells,
   lineStringWkt,
+  splitSessionByRouteFit,
+  weightedDiscreteFrechet,
+  type RouteMatchMetrics,
   type RoutePoint,
   type RouteQualityInputs,
   type TrailCell,
@@ -12,6 +15,9 @@ import {
 } from '../_shared/route_inference.ts';
 
 const batchSize = 50;
+const routeFrechetThresholdMeters = 45;
+const routeOverlapThreshold = 0.35;
+const routeScoreMarginThresholdMeters = 15;
 
 type SupabaseClient = any;
 
@@ -24,6 +30,16 @@ export type SessionCellAttributionRow = {
   avgAccuracy: number | null;
   avgAltitude: number | null;
   lastSeenAt: string | null;
+};
+
+type RouteMatchMethod = 'exact_overlap' | 'frechet_match' | 'candidate_residual';
+
+type RouteMatchDecision = {
+  routeId: string | null;
+  accepted: boolean;
+  method: RouteMatchMethod;
+  metrics: RouteMatchMetrics | null;
+  scoreMargin: number | null;
 };
 
 export async function handleMatchAndAggregateSessions(
@@ -130,7 +146,7 @@ async function processSession(
     };
   }
 
-  const { cells, transitions } = buildSessionHitmap(points);
+  const { cells, transitions, path } = buildSessionHitmap(points);
   if (cells.length === 0) {
     await markSessionProcessed(supabase, sessionId);
     const purgeResult = await purgeSessionRawPoints(supabase, sessionId);
@@ -145,27 +161,70 @@ async function processSession(
     };
   }
 
-  const [storedCells, bootstrapInfo] = await Promise.all([
+  const [storedCells, routePaths, bootstrapInfo] = await Promise.all([
     fetchMountainRouteCells(supabase, mountainId),
+    fetchMountainRoutePaths(supabase, mountainId),
     findBootstrapRoute(supabase, mountainId),
   ]);
 
   const routeGroups = new Map<string, TrailCell[]>();
   const orphanCells: TrailCell[] = [];
   let orphanCellsAdded = 0;
+  const matchDiagnostics = new Map<string, RouteMatchDecision>();
 
-  for (const cell of cells) {
-    const matchedRouteId = findNearestRouteCell(cell, storedCells) ??
-      (bootstrapInfo !== null && isWithinBbox(cell, bootstrapInfo.bbox)
-        ? bootstrapInfo.routeId
-        : null);
+  if (bootstrapInfo !== null) {
+    for (const cell of cells) {
+      if (isWithinBbox(cell, bootstrapInfo.bbox)) {
+        const group = routeGroups.get(bootstrapInfo.routeId) ?? [];
+        group.push(cell);
+        routeGroups.set(bootstrapInfo.routeId, group);
+      } else {
+        orphanCells.push(cell);
+      }
+    }
+    matchDiagnostics.set(bootstrapInfo.routeId, {
+      routeId: bootstrapInfo.routeId,
+      accepted: true,
+      method: 'exact_overlap',
+      metrics: null,
+      scoreMargin: null,
+    });
+  } else {
+    const decision = chooseRouteForSessionPath(path, routePaths);
+    const bestRoutePath = decision.routeId === null
+      ? null
+      : routePaths.find((routePath) => routePath.routeId === decision.routeId) ?? null;
 
-    if (matchedRouteId !== null) {
-      const group = routeGroups.get(matchedRouteId) ?? [];
-      group.push(cell);
-      routeGroups.set(matchedRouteId, group);
+    if (bestRoutePath !== null) {
+      const split = splitSessionByRouteFit(
+        path,
+        bestRoutePath.path,
+        decision.accepted,
+        routeFrechetThresholdMeters,
+      );
+      if (split.routeCells.length > 0) {
+        routeGroups.set(bestRoutePath.routeId, split.routeCells);
+        matchDiagnostics.set(bestRoutePath.routeId, decision);
+      }
+      orphanCells.push(...split.candidateCells);
     } else {
-      orphanCells.push(cell);
+      for (const cell of cells) {
+        const matchedRouteId = findNearestRouteCell(cell, storedCells);
+        if (matchedRouteId !== null) {
+          const group = routeGroups.get(matchedRouteId) ?? [];
+          group.push(cell);
+          routeGroups.set(matchedRouteId, group);
+          matchDiagnostics.set(matchedRouteId, {
+            routeId: matchedRouteId,
+            accepted: true,
+            method: 'exact_overlap',
+            metrics: null,
+            scoreMargin: null,
+          });
+        } else {
+          orphanCells.push(cell);
+        }
+      }
     }
   }
 
@@ -186,7 +245,15 @@ async function processSession(
     ]);
     if (cellError) return emptySessionResult(cellError);
     if (transitionError) return emptySessionResult(transitionError);
-    await recordSessionAssignment(supabase, sessionId, routeId, routeCells.length, routeTransitions.length);
+    const diagnostics = matchDiagnostics.get(routeId) ?? null;
+    await recordSessionAssignment(
+      supabase,
+      sessionId,
+      routeId,
+      routeCells.length,
+      routeTransitions.length,
+      diagnostics,
+    );
   }
 
   if (orphanCells.length > 0) {
@@ -300,6 +367,11 @@ function emptySessionResult(error: string): {
 }
 
 export type StoredRouteCell = { routeId: string; cellKey: string; lat: number; lon: number };
+type StoredRoutePath = {
+  routeId: string;
+  path: TrailCell[];
+  supportMap: Map<string, TrailCell>;
+};
 
 async function fetchMountainRouteCells(
   supabase: SupabaseClient,
@@ -315,6 +387,66 @@ async function fetchMountainRouteCells(
     lat: Number(row.lat),
     lon: Number(row.lon),
   }));
+}
+
+async function fetchMountainRoutePaths(
+  supabase: SupabaseClient,
+  mountainId: string,
+): Promise<StoredRoutePath[]> {
+  const { data: routes, error } = await supabase
+    .from('routes')
+    .select('id')
+    .eq('mountain_id', mountainId);
+  if (error || !routes) return [];
+
+  const paths = await Promise.all(
+    (routes as Array<{ id: string }>).map(async (route) => {
+      const [cellsResult, transitionsResult] = await Promise.all([
+        supabase.rpc('route_accumulated_cells', { p_route_id: route.id }),
+        supabase
+          .from('trail_cell_transitions')
+          .select('from_cell_key, to_cell_key, transition_count, session_count, edge_cost')
+          .eq('route_id', route.id),
+      ]);
+
+      if (cellsResult.error || transitionsResult.error) return null;
+
+      const cells: TrailCell[] = ((cellsResult.data ?? []) as any[]).map((row) => ({
+        cellKey: row.cell_key,
+        lat: Number(row.lat),
+        lon: Number(row.lon),
+        pointCount: row.point_count,
+        sessionCount: row.session_count,
+        avgAccuracy: row.avg_accuracy ?? null,
+        avgAltitude: row.avg_altitude ?? null,
+        lastSeenAt: row.last_seen_at,
+        qualityScore: row.quality_score ?? 0,
+      })).filter((cell) => Number.isFinite(cell.lat) && Number.isFinite(cell.lon));
+
+      if (cells.length === 0) return null;
+
+      const transitions: TrailTransition[] = ((transitionsResult.data ?? []) as any[]).map((row) => ({
+        fromCellKey: row.from_cell_key,
+        toCellKey: row.to_cell_key,
+        transitionCount: row.transition_count,
+        sessionCount: row.session_count,
+        edgeCost: row.edge_cost,
+      }));
+
+      const inferred = inferCanonicalRouteFromCells(cells, transitions);
+      const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
+      const path = inferred.cellKeys
+        .map((cellKey) => cellByKey.get(cellKey))
+        .filter((cell): cell is TrailCell => cell !== undefined);
+      return {
+        routeId: route.id,
+        path: path.length > 0 ? path : cells,
+        supportMap: cellByKey,
+      };
+    }),
+  );
+
+  return paths.filter((path): path is StoredRoutePath => path !== null);
 }
 
 type BootstrapInfo = { routeId: string; bbox: BoundingBox };
@@ -362,6 +494,64 @@ export function findNearestRouteCell(
 ): string | null {
   const exactCell = storedCells.find((stored) => stored.cellKey === sessionCell.cellKey);
   return exactCell?.routeId ?? null;
+}
+
+function chooseRouteForSessionPath(
+  sessionPath: TrailCell[],
+  routePaths: StoredRoutePath[],
+): RouteMatchDecision {
+  if (sessionPath.length === 0 || routePaths.length === 0) {
+    return candidateResidualDecision();
+  }
+
+  const scored = routePaths
+    .filter((routePath) => routePath.path.length > 0)
+    .map((routePath) => ({
+      routeId: routePath.routeId,
+      metrics: weightedDiscreteFrechet(sessionPath, routePath.path, routePath.supportMap),
+    }))
+    .sort((left, right) => left.metrics.score - right.metrics.score);
+
+  const best = scored[0];
+  if (!best) return candidateResidualDecision();
+
+  const next = scored[1] ?? null;
+  const scoreMargin = next === null
+    ? Number.POSITIVE_INFINITY
+    : next.metrics.score - best.metrics.score;
+  const exactOverlap = best.metrics.overlapRatio > 0;
+  const frechetAccepted =
+    best.metrics.frechetDistance <= routeFrechetThresholdMeters &&
+    best.metrics.overlapRatio >= routeOverlapThreshold &&
+    scoreMargin >= routeScoreMarginThresholdMeters;
+
+  if (!exactOverlap && !frechetAccepted) {
+    return {
+      routeId: null,
+      accepted: false,
+      method: 'candidate_residual',
+      metrics: best.metrics,
+      scoreMargin,
+    };
+  }
+
+  return {
+    routeId: best.routeId,
+    accepted: frechetAccepted,
+    method: frechetAccepted && !exactOverlap ? 'frechet_match' : 'exact_overlap',
+    metrics: best.metrics,
+    scoreMargin,
+  };
+}
+
+function candidateResidualDecision(): RouteMatchDecision {
+  return {
+    routeId: null,
+    accepted: false,
+    method: 'candidate_residual',
+    metrics: null,
+    scoreMargin: null,
+  };
 }
 
 function isWithinBbox(cell: TrailCell, bbox: BoundingBox): boolean {
@@ -501,6 +691,7 @@ async function recordSessionAssignment(
   routeId: string,
   cellCount: number,
   transitionCount: number,
+  diagnostics: RouteMatchDecision | null,
 ): Promise<void> {
   await supabase.from('session_route_assignments').upsert(
     {
@@ -508,6 +699,12 @@ async function recordSessionAssignment(
       route_id: routeId,
       contributed_cell_count: cellCount,
       contributed_transition_count: transitionCount,
+      match_method: diagnostics?.method ?? 'exact_overlap',
+      frechet_distance: diagnostics?.metrics?.frechetDistance ?? null,
+      overlap_ratio: diagnostics?.metrics?.overlapRatio ?? null,
+      score_margin: diagnostics?.scoreMargin === Number.POSITIVE_INFINITY
+        ? null
+        : diagnostics?.scoreMargin ?? null,
     },
     { onConflict: 'session_id,route_id' },
   );

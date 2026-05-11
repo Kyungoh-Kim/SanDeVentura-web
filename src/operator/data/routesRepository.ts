@@ -83,6 +83,10 @@ type SessionRouteAttributionRow = {
   cell_count: number;
   point_count: number | null;
   transition_count: number;
+  match_method: string;
+  frechet_distance: number | null;
+  overlap_ratio: number | null;
+  score_margin: number | null;
   attribution_precision: string;
 };
 
@@ -269,7 +273,7 @@ export async function fetchSessionRouteAttribution(
   const { data, error } = await supabase
     .from('operator_session_route_attribution')
     .select(
-      'session_id, route_id, route_display_name, cell_count, point_count, transition_count, attribution_precision',
+      'session_id, route_id, route_display_name, cell_count, point_count, transition_count, match_method, frechet_distance, overlap_ratio, score_margin, attribution_precision',
     )
     .eq('session_id', sessionId)
     .order('route_id');
@@ -283,6 +287,10 @@ export async function fetchSessionRouteAttribution(
     cellCount: row.cell_count,
     pointCount: row.point_count,
     transitionCount: row.transition_count,
+    matchMethod: row.match_method as OperatorSessionRouteAttribution['matchMethod'],
+    frechetDistance: row.frechet_distance,
+    overlapRatio: row.overlap_ratio,
+    scoreMargin: row.score_margin,
     attributionPrecision: row.attribution_precision as OperatorSessionRouteAttribution['attributionPrecision'],
   }));
 }

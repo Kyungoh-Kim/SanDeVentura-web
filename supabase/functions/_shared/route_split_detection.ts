@@ -1,17 +1,19 @@
-import { gridDisk } from 'npm:h3-js';
-
 import {
+  clusterCandidateResiduals,
   inferCanonicalRouteFromCells,
+  weightedDiscreteFrechet,
+  type CandidateResidualCluster,
   type TrailCell,
   type TrailTransition,
 } from './route_inference.ts';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const minCfgConfidence = 0.50;
-const minCrossBranchRatio = 0.30;
-const minClusterSessionCount = 2;
-const minSegmentCells = 3;
+const minCfgConfidence = 0.80;
+const minCrossBranchRatio = 0.55;
+const minClusterSessionCount = 3;
+const minClusterCellCount = 3;
+const minSegmentCells = 5;
 
 // ── Input types ───────────────────────────────────────────────────────────────
 
@@ -44,6 +46,10 @@ export type BranchCandidate = {
   clusterSessionCount: number;
   cfgConfidence: number;
   crossBranchRatio: number;
+  frechetDistance: number | null;
+  matchScore: number | null;
+  clusterWeight: number;
+  autoDecision: 'auto_split' | 'review_required';
   contributingSessions: string[];
 };
 
@@ -58,19 +64,13 @@ export type SplitPlan = {
   newBranchRouteId: string;
   cfgConfidence: number;
   crossBranchRatio: number;
+  frechetDistance: number | null;
+  matchScore: number | null;
+  clusterWeight: number;
+  autoDecision: 'auto_split' | 'review_required';
   affectedSessions: string[];
   valid: boolean;
   invalidReason?: string;
-};
-
-// ── Internal cluster type ─────────────────────────────────────────────────────
-
-type CandidateCluster = {
-  cellKeys: Set<string>;
-  sessionCount: number;
-  contributingSessions: string[];
-  cells: TrailCell[];
-  transitions: TrailTransition[];
 };
 
 // ── Main exported functions ───────────────────────────────────────────────────
@@ -80,12 +80,13 @@ export function detectBranchCandidates(ctx: MountainCtx): BranchCandidate[] {
     return [];
   }
 
-  const clusters = findCandidateClusters(ctx.candidateCells, ctx.candidateTransitions);
+  const clusters = clusterCandidateResiduals(ctx.candidateCells, ctx.candidateTransitions, {
+    minClusterSessionCount: 2,
+    minClusterCellCount,
+  });
   const results: BranchCandidate[] = [];
 
   for (const cluster of clusters) {
-    if (cluster.sessionCount < minClusterSessionCount) continue;
-
     const connection = findStrongestCrossConnection(cluster, ctx.crossTransitions);
     if (!connection) continue;
 
@@ -102,23 +103,31 @@ export function detectBranchCandidates(ctx: MountainCtx): BranchCandidate[] {
       ),
     );
 
-    if (
-      cfgConfidence >= minCfgConfidence &&
-      crossBranchRatio >= minCrossBranchRatio
-    ) {
-      results.push({
-        originalRouteId: routeId,
-        branchPointCellKey,
-        clusterCellKeys: cluster.cellKeys,
-        clusterSessionCount: cluster.sessionCount,
-        cfgConfidence,
-        crossBranchRatio,
-        contributingSessions: cluster.contributingSessions,
-      });
-    }
+    const clusterPath = orderedPathFromCells(cluster.cells, cluster.transitions, cluster.sessionCount);
+    const routePath = orderedPathFromCells(routeCellsForRoute, routeTransitionsForRoute);
+    const frechet = clusterPath.length > 0 && routePath.length > 0
+      ? weightedDiscreteFrechet(clusterPath, routePath, new Map(routeCellsForRoute.map((cell) => [cell.cellKey, cell])))
+      : null;
+    const autoDecision = cfgConfidence >= minCfgConfidence &&
+        crossBranchRatio >= minCrossBranchRatio &&
+        cluster.sessionCount >= minClusterSessionCount
+      ? 'auto_split'
+      : 'review_required';
 
-    // Unused variable warning suppression — routeCellsForRoute is available
-    void routeCellsForRoute;
+    results.push({
+      originalRouteId: routeId,
+      branchPointCellKey,
+      clusterCellKeys: cluster.cellKeys,
+      clusterSessionCount: cluster.sessionCount,
+      cfgConfidence,
+      crossBranchRatio,
+      frechetDistance: frechet?.frechetDistance ?? null,
+      matchScore: frechet === null ? null : cfgConfidence * 100 + crossBranchRatio * 50 +
+        cluster.clusterWeight * 0.5 - frechet.frechetDistance,
+      clusterWeight: cluster.clusterWeight,
+      autoDecision,
+      contributingSessions: cluster.contributingSessions,
+    });
   }
 
   return results;
@@ -134,6 +143,10 @@ export function computeSplitPlan(
   branchClusterTransitions: TrailTransition[],
   cfgConfidence: number,
   crossBranchRatio: number,
+  frechetDistance: number | null,
+  matchScore: number | null,
+  clusterWeight: number,
+  autoDecision: 'auto_split' | 'review_required',
   contributingSessions: string[],
 ): SplitPlan {
   const invalid = (reason: string): SplitPlan => ({
@@ -147,28 +160,29 @@ export function computeSplitPlan(
     newBranchRouteId: '',
     cfgConfidence,
     crossBranchRatio,
+    frechetDistance,
+    matchScore,
+    clusterWeight,
+    autoDecision,
     affectedSessions: contributingSessions,
     valid: false,
     invalidReason: reason,
   });
 
   if (routeCells.length === 0) return invalid('route_has_no_cells');
+  if (autoDecision !== 'auto_split') return invalid('review_required');
+  if (cfgConfidence < minCfgConfidence) return invalid(`cfg_confidence_too_low: ${cfgConfidence.toFixed(2)} < ${minCfgConfidence}`);
+  if (crossBranchRatio < minCrossBranchRatio) return invalid(`cross_branch_ratio_too_low: ${crossBranchRatio.toFixed(2)} < ${minCrossBranchRatio}`);
+  if (contributingSessions.length < minClusterSessionCount) {
+    return invalid(`affected_sessions_too_low: ${contributingSessions.length} < ${minClusterSessionCount}`);
+  }
 
   // Derive ordered path from inferCanonicalRouteFromCells
   const route = inferCanonicalRouteFromCells(routeCells, routeTransitions);
   if (route.line.length < 2) return invalid('route_has_no_valid_path');
 
-  // Map lat/lon → cellKey using route cells
-  const cellByLatLon = new Map<string, string>();
-  for (const cell of routeCells) {
-    cellByLatLon.set(latLonKey(cell.lat, cell.lon), cell.cellKey);
-  }
-
-  const orderedCellKeys: string[] = [];
-  for (const point of route.line) {
-    const key = cellByLatLon.get(latLonKey(point.lat, point.lon));
-    if (key) orderedCellKeys.push(key);
-  }
+  // Split the inferred route by the exact ordered cell corridor, not by smoothed coordinates.
+  const orderedCellKeys = route.cellKeys;
 
   if (orderedCellKeys.length === 0) return invalid('could_not_reconstruct_path');
 
@@ -206,6 +220,10 @@ export function computeSplitPlan(
     newBranchRouteId,
     cfgConfidence,
     crossBranchRatio,
+    frechetDistance,
+    matchScore,
+    clusterWeight,
+    autoDecision,
     affectedSessions: contributingSessions,
     valid: true,
   };
@@ -213,87 +231,10 @@ export function computeSplitPlan(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-function findCandidateClusters(
-  cells: TrailCell[],
-  transitions: TrailTransition[],
-): CandidateCluster[] {
-  if (cells.length === 0) return [];
-
-  const cellMap = new Map(cells.map((c) => [c.cellKey, c]));
-  const adjacency = new Map<string, Set<string>>();
-
-  for (const cell of cells) {
-    if (!adjacency.has(cell.cellKey)) adjacency.set(cell.cellKey, new Set());
-  }
-
-  // Connect via actual transitions
-  for (const t of transitions) {
-    if (cellMap.has(t.fromCellKey) && cellMap.has(t.toCellKey)) {
-      adjacency.get(t.fromCellKey)!.add(t.toCellKey);
-      adjacency.get(t.toCellKey)!.add(t.fromCellKey);
-    }
-  }
-
-  // Connect via H3 adjacency (gridDisk radius 1)
-  for (const cell of cells) {
-    const neighbors = gridDisk(cell.cellKey, 1).filter(
-      (n: string) => n !== cell.cellKey && cellMap.has(n),
-    );
-    for (const neighbor of neighbors) {
-      adjacency.get(cell.cellKey)!.add(neighbor);
-      adjacency.get(neighbor)!.add(cell.cellKey);
-    }
-  }
-
-  // BFS connected components
-  const visited = new Set<string>();
-  const clusters: CandidateCluster[] = [];
-
-  for (const cell of cells) {
-    if (visited.has(cell.cellKey)) continue;
-
-    const clusterKeys = new Set<string>();
-    const queue: string[] = [cell.cellKey];
-
-    while (queue.length > 0) {
-      const key = queue.pop()!;
-      if (visited.has(key)) continue;
-      visited.add(key);
-      clusterKeys.add(key);
-      for (const neighbor of adjacency.get(key) ?? []) {
-        if (!visited.has(neighbor)) queue.push(neighbor);
-      }
-    }
-
-    const clusterCells = [...clusterKeys]
-      .map((k) => cellMap.get(k)!)
-      .filter(Boolean);
-
-    const sessionCount = Math.max(...clusterCells.map((c) => c.sessionCount), 0);
-    const contributingSessions = dedupeUuids(
-      clusterCells.flatMap((c) => (c as any).contributingSessions ?? []),
-    );
-
-    const clusterTransitions = transitions.filter(
-      (t) => clusterKeys.has(t.fromCellKey) && clusterKeys.has(t.toCellKey),
-    );
-
-    clusters.push({
-      cellKeys: clusterKeys,
-      sessionCount,
-      contributingSessions,
-      cells: clusterCells,
-      transitions: clusterTransitions,
-    });
-  }
-
-  return clusters;
-}
-
 type ClusterConnection = { routeId: string; branchPointCellKey: string; strength: number };
 
 function findStrongestCrossConnection(
-  cluster: CandidateCluster,
+  cluster: CandidateResidualCluster,
   crossTransitions: CrossTransitionRow[],
 ): ClusterConnection | null {
   let best: ClusterConnection | null = null;
@@ -312,7 +253,7 @@ function findStrongestCrossConnection(
 }
 
 function computeClusterConfidence(
-  cluster: CandidateCluster,
+  cluster: CandidateResidualCluster,
   allCandidateTransitions: TrailTransition[],
 ): number {
   const clusterTransitions = allCandidateTransitions.filter(
@@ -347,8 +288,18 @@ function computeCrossBranchRatio(
   return total === 0 ? 0 : crossStrength / total;
 }
 
-function latLonKey(lat: number, lon: number): string {
-  return `${lat.toFixed(8)},${lon.toFixed(8)}`;
+function orderedPathFromCells(
+  cells: TrailCell[],
+  transitions: TrailTransition[],
+  sessionCount?: number,
+): TrailCell[] {
+  if (cells.length === 0) return [];
+  const route = inferCanonicalRouteFromCells(cells, transitions, { sessionCount });
+  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
+  const ordered = route.cellKeys
+    .map((cellKey) => cellByKey.get(cellKey))
+    .filter((cell): cell is TrailCell => cell !== undefined);
+  return ordered.length > 0 ? ordered : cells;
 }
 
 function makeShortHash(input: string): string {
@@ -357,8 +308,4 @@ function makeShortHash(input: string): string {
     hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
   }
   return hash.toString(36).slice(0, 6);
-}
-
-function dedupeUuids(uuids: string[]): string[] {
-  return [...new Set(uuids)];
 }

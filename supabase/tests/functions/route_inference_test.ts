@@ -1,10 +1,20 @@
 import {
+  cellToLatLng,
+  gridDisk,
+} from 'npm:h3-js';
+
+import {
   buildSessionHitmap,
+  clusterCandidateResiduals,
   inferCanonicalRoute,
   inferCanonicalRouteFromCells,
   lineStringWkt,
+  pointToCellKey,
+  smoothCanonicalLine,
+  splitSessionByRouteFit,
   type RoutePoint,
   type TrailCell,
+  weightedDiscreteFrechet,
 } from '../../functions/_shared/route_inference.ts';
 import {
   buildSessionCellAttributionRows,
@@ -303,6 +313,104 @@ Deno.test('findNearestRouteCell only absorbs exact route cells', () => {
   );
 });
 
+Deno.test('weightedDiscreteFrechet scores exact overlap below offset path', () => {
+  const routePath = [
+    validCell(37.5, 127.0, 4, 3),
+    validCell(37.5003, 127.0003, 4, 3),
+    validCell(37.5006, 127.0006, 4, 3),
+  ];
+  const offsetPath = [
+    validCell(37.505, 127.005, 4, 2),
+    validCell(37.5053, 127.0053, 4, 2),
+    validCell(37.5056, 127.0056, 4, 2),
+  ];
+
+  const exact = weightedDiscreteFrechet(routePath, routePath);
+  const offset = weightedDiscreteFrechet(offsetPath, routePath);
+
+  assertEquals(exact.overlapRatio, 1);
+  assert(exact.frechetDistance < offset.frechetDistance, 'exact path should score closer');
+});
+
+Deno.test('splitSessionByRouteFit preserves exact overlap and leaves residual candidates', () => {
+  const routePath = [
+    validCell(37.5, 127.0, 3, 3),
+    validCell(37.5003, 127.0003, 3, 3),
+  ];
+  const residual = validCell(37.505, 127.005, 3, 2);
+
+  const split = splitSessionByRouteFit([...routePath, residual], routePath, false);
+
+  assertEquals(split.routeCells.map((cell) => cell.cellKey), routePath.map((cell) => cell.cellKey));
+  assertEquals(split.candidateCells.map((cell) => cell.cellKey), [residual.cellKey]);
+});
+
+Deno.test('splitSessionByRouteFit accepts nearby correction only after path match', () => {
+  const routePath = [
+    validCell(37.5, 127.0, 3, 3),
+    validCell(37.5003, 127.0003, 3, 3),
+  ];
+  const nearRouteKey = gridDisk(routePath[1].cellKey, 1)
+    .find((key) => !routePath.some((cell) => cell.cellKey === key));
+  if (!nearRouteKey) throw new Error('expected nearby non-overlap cell');
+  const nearRoute = cellFromKey(nearRouteKey, 3, 2);
+
+  const rejected = splitSessionByRouteFit([nearRoute], routePath, false, 75);
+  const accepted = splitSessionByRouteFit([nearRoute], routePath, true, 75);
+
+  assertEquals(rejected.candidateCells.map((cell) => cell.cellKey), [nearRoute.cellKey]);
+  assertEquals(accepted.routeCells.map((cell) => cell.cellKey), [nearRoute.cellKey]);
+});
+
+Deno.test('smoothCanonicalLine limits neighbor support movement', () => {
+  const center = validCell(37.5, 127.0, 2, 1);
+  const next = validCell(37.5003, 127.0003, 2, 1);
+  const neighborKey = gridDisk(center.cellKey, 1).find((key) => key !== center.cellKey);
+  if (!neighborKey) throw new Error('expected H3 neighbor');
+  const [neighborLat, neighborLon] = cellToLatLng(neighborKey);
+  const neighbor = {
+    ...center,
+    cellKey: neighborKey,
+    lat: neighborLat,
+    lon: neighborLon,
+    pointCount: 100,
+    sessionCount: 100,
+  };
+
+  const line = smoothCanonicalLine(
+    [center, next],
+    new Map([
+      [center.cellKey, center],
+      [next.cellKey, next],
+      [neighbor.cellKey, neighbor],
+    ]),
+  );
+
+  assert(line.length >= 2, 'expected smoothed line');
+  assert(
+    distanceMeters(center, line[0]) <= 45,
+    'smoothed point should remain close to the original cell corridor',
+  );
+});
+
+Deno.test('clusterCandidateResiduals separates supported cluster from singleton noise', () => {
+  const seed = validCell(37.5, 127.0, 4, 2);
+  const neighborKeys = gridDisk(seed.cellKey, 1).filter((key) => key !== seed.cellKey);
+  const clusterCells = [seed, ...neighborKeys.slice(0, 2).map((key, index) =>
+    cellFromKey(key, 4 + index, 2, ['session-a', 'session-b'])
+  )];
+  const noise = validCell(37.52, 127.02, 9, 5, ['noise-session']);
+
+  const clusters = clusterCandidateResiduals([...clusterCells, noise], [], {
+    minClusterCellCount: 3,
+    minClusterSessionCount: 2,
+  });
+
+  assertEquals(clusters.length, 1);
+  assertEquals(clusters[0].cells.length, 3);
+  assertEquals(clusters[0].sessionCount, 2);
+});
+
 Deno.test('inferCanonicalRouteFromCells produces same confidence level as inferCanonicalRoute', () => {
   const points = repeatedTracePoints(3);
   const fromPoints = inferCanonicalRoute(points);
@@ -395,6 +503,52 @@ function testCell(cellKey: string, pointCount: number): TrailCell {
     lastSeenAt: '2026-05-08T01:00:00Z',
     qualityScore: 0.91,
   };
+}
+
+function validCell(
+  lat: number,
+  lon: number,
+  pointCount: number,
+  sessionCount: number,
+  contributingSessions: string[] = [],
+): TrailCell {
+  return cellFromKey(pointToCellKey(lat, lon), pointCount, sessionCount, contributingSessions);
+}
+
+function cellFromKey(
+  cellKey: string,
+  pointCount: number,
+  sessionCount: number,
+  contributingSessions: string[] = [],
+): TrailCell {
+  const [lat, lon] = cellToLatLng(cellKey);
+  return {
+    cellKey,
+    lat,
+    lon,
+    pointCount,
+    sessionCount,
+    avgAccuracy: 9,
+    avgAltitude: 800,
+    lastSeenAt: '2026-05-08T01:00:00Z',
+    qualityScore: 0.91,
+    ...(contributingSessions.length > 0 ? { contributingSessions } : {}),
+  } as TrailCell;
+}
+
+function distanceMeters(
+  a: { lat: number; lon: number },
+  b: { lat: number; lon: number },
+): number {
+  const radius = 6_371_000;
+  const toRadians = (degrees: number) => degrees * Math.PI / 180;
+  const dLat = toRadians(b.lat - a.lat);
+  const dLon = toRadians(b.lon - a.lon);
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * radius * Math.asin(Math.sqrt(h));
 }
 
 function branchTracePoints(sessionCount: number): RoutePoint[] {

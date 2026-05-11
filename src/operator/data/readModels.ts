@@ -11,6 +11,7 @@ export type UploadState =
   | 'rejected'
   | 'accepted';
 export type AttributionPrecision = 'exact' | 'approximate' | 'none';
+export type RouteMatchMethod = 'exact_overlap' | 'frechet_match' | 'candidate_residual';
 
 export type Mountain = {
   id: string;
@@ -86,6 +87,10 @@ export type OperatorSessionRouteAttribution = {
   cellCount: number;
   pointCount: number | null;
   transitionCount: number;
+  matchMethod: RouteMatchMethod;
+  frechetDistance: number | null;
+  overlapRatio: number | null;
+  scoreMargin: number | null;
   attributionPrecision: AttributionPrecision;
 };
 
