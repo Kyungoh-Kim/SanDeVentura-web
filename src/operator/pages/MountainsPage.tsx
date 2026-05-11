@@ -1,5 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+﻿import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 
+import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
 import { type CandidateCell, type Mountain, type OperatorRouteCoverage, type OperatorRouteDetail } from '../data/readModels';
 import {
   fetchMountains,
@@ -31,7 +32,7 @@ export function MountainsPage() {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewRoutes, setPreviewRoutes] = useState<OperatorRouteDetail[]>([]);
   const [previewCells, setPreviewCells] = useState<CandidateCell[]>([]);
-  const [mapExpanded, setMapExpanded] = useState(false);
+  const [page, setPage] = useState(1);
 
   const loadMountains = useCallback(() => {
     Promise.all([fetchMountains(), fetchRouteCoverage()])
@@ -118,7 +119,7 @@ export function MountainsPage() {
       : null;
 
     if (allFilled && parseBbox(newBbox) === null) {
-      setError('Invalid bbox — check that min < max values.');
+      setError('Invalid bbox: check that min < max values.');
       return;
     }
 
@@ -136,6 +137,12 @@ export function MountainsPage() {
 
   const previewMountain = mountains.find((m) => m.id === previewId) ?? null;
   const previewBbox = parseBbox(previewMountain?.bbox ?? null);
+  const pageCount = getPageCount(mountains.length);
+  const pageMountains = getPageItems(mountains, Math.min(page, pageCount));
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
 
   return (
     <>
@@ -144,7 +151,7 @@ export function MountainsPage() {
         <span className="page-badge">Operator only</span>
         <div style={{ flex: 1 }} />
         <button className="btn btn-ghost" type="button" onClick={loadMountains}>
-          ↻ Refresh
+          Refresh
         </button>
       </div>
 
@@ -157,7 +164,7 @@ export function MountainsPage() {
             style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer' }}
             onClick={() => setError(null)}
           >
-            ✕
+            Close
           </button>
         </div>
       )}
@@ -185,6 +192,9 @@ export function MountainsPage() {
         <div className="table-panel">
           <div className="table-panel-header">
             <span className="table-panel-title">Mountain registry</span>
+            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+              {mountains.length} mountain{mountains.length !== 1 ? 's' : ''}
+            </span>
           </div>
           <table>
             <thead>
@@ -206,7 +216,7 @@ export function MountainsPage() {
                   </td>
                 </tr>
               )}
-              {mountains.map((mountain) => {
+              {pageMountains.map((mountain) => {
                 const isEditing = edit?.mountainId === mountain.id;
                 const isSaving = saving === mountain.id;
                 const isSelected = previewId === mountain.id;
@@ -224,7 +234,7 @@ export function MountainsPage() {
                     <td>
                       {(() => {
                         const s = mountainStats.get(mountain.id);
-                        if (!s || s.routes === 0) return <span className="cell-sub">—</span>;
+                        if (!s || s.routes === 0) return <span className="cell-sub">-</span>;
                         return (
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <span className="cell-mono">{s.routes}</span>
@@ -238,13 +248,13 @@ export function MountainsPage() {
                     </td>
                     <td>
                       <span className="cell-mono">
-                        {mountainStats.get(mountain.id)?.sessions.toLocaleString() ?? '—'}
+                        {mountainStats.get(mountain.id)?.sessions.toLocaleString() ?? '-'}
                       </span>
                     </td>
                     <td>
                       {(() => {
                         const s = mountainStats.get(mountain.id);
-                        if (!s || s.confidenceCount === 0) return <span className="cell-sub">—</span>;
+                        if (!s || s.confidenceCount === 0) return <span className="cell-sub">-</span>;
                         const pct = Math.round((s.confidenceSum / s.confidenceCount) * 100);
                         const color = pct >= 70 ? 'var(--success)' : pct >= 40 ? 'var(--warn)' : 'var(--error, #e55)';
                         return <span className="cell-mono" style={{ color }}>{pct}%</span>;
@@ -253,11 +263,11 @@ export function MountainsPage() {
                     <td>
                       {(() => {
                         const s = mountainStats.get(mountain.id);
-                        if (!s?.latestUpdatedAt) return <span className="cell-sub">—</span>;
+                        if (!s?.latestUpdatedAt) return <span className="cell-sub">-</span>;
                         return <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{formatRelativeDate(s.latestUpdatedAt)}</span>;
                       })()}
                     </td>
-                    <td onClick={(e) => e.stopPropagation()}>
+                    <td onClick={isEditing ? (e) => e.stopPropagation() : undefined}>
                       {isEditing ? (
                         <BboxInputs
                           edit={edit!}
@@ -267,7 +277,7 @@ export function MountainsPage() {
                         />
                       ) : (
                         <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
-                          {mountain.bbox ?? <span style={{ color: 'var(--text-3)' }}>—</span>}
+                          {mountain.bbox ?? <span style={{ color: 'var(--text-3)' }}>-</span>}
                         </span>
                       )}
                     </td>
@@ -275,7 +285,7 @@ export function MountainsPage() {
                       {isEditing ? (
                         <div style={{ display: 'flex', gap: 6 }}>
                           <button className="btn btn-primary" type="button" disabled={isSaving} onClick={saveEdit}>
-                            {isSaving ? '…' : 'Save'}
+                            {isSaving ? 'Saving...' : 'Save'}
                           </button>
                           <button className="btn btn-ghost" type="button" onClick={cancelEdit}>
                             Cancel
@@ -292,6 +302,11 @@ export function MountainsPage() {
               })}
             </tbody>
           </table>
+          <Pagination
+            page={Math.min(page, pageCount)}
+            totalItems={mountains.length}
+            onPageChange={setPage}
+          />
         </div>
 
         <div className="route-detail-panel">
@@ -300,17 +315,6 @@ export function MountainsPage() {
               <div className="card-title" style={{ margin: 0, flex: 1 }}>
                 {previewMountain ? previewMountain.displayName : 'Select a mountain'}
               </div>
-              {previewMountain && (
-                <button
-                  className="btn btn-ghost"
-                  type="button"
-                  title="지도 확대"
-                  onClick={() => setMapExpanded(true)}
-                  style={{ fontSize: 15, padding: '3px 8px', lineHeight: 1 }}
-                >
-                  ⤢
-                </button>
-              )}
             </div>
             {previewMountain ? (
               <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing map preview.</span></div>}>
@@ -320,6 +324,7 @@ export function MountainsPage() {
                   bbox={previewBbox}
                   routes={previewRoutes.filter((r) => r.trailGeoJson !== null).map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState }))}
                   cells={previewCells}
+                  title={previewMountain.displayName}
                 />
               </Suspense>
             ) : (
@@ -332,32 +337,6 @@ export function MountainsPage() {
         </div>
       </div>
 
-      {mapExpanded && previewMountain && (
-        <div className="modal-backdrop" onClick={() => setMapExpanded(false)}>
-          <div className="modal map-modal" onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <h3 className="modal-title" style={{ margin: 0, flex: 1 }}>{previewMountain.displayName}</h3>
-              <button
-                className="btn btn-ghost"
-                type="button"
-                onClick={() => setMapExpanded(false)}
-                style={{ fontSize: 16, padding: '2px 8px', lineHeight: 1 }}
-              >
-                ✕
-              </button>
-            </div>
-            <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing map preview.</span></div>}>
-              <OperatorRouteMap
-                geometry={null}
-                routeState="none"
-                bbox={previewBbox}
-                routes={previewRoutes.filter((r) => r.trailGeoJson !== null).map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState }))}
-                cells={previewCells}
-              />
-            </Suspense>
-          </div>
-        </div>
-      )}
     </>
   );
 }

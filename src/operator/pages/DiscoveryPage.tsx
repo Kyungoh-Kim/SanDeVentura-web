@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
 import {
   type CandidateCluster,
   type EvaluateRouteSplitsResult,
@@ -46,6 +47,7 @@ export function DiscoveryPage() {
   const [selectedMountainId, setSelectedMountainId] = useState<string | null>(null);
   const [selectedCells, setSelectedCells] = useState<CandidateCell[]>([]);
   const [selectedRoutes, setSelectedRoutes] = useState<OperatorRouteDetail[]>([]);
+  const [page, setPage] = useState(1);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -94,6 +96,12 @@ export function DiscoveryPage() {
       .map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState })),
     [selectedRoutes],
   );
+  const pageCount = getPageCount(clusters.length);
+  const pageClusters = getPageItems(clusters, Math.min(page, pageCount));
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
 
   function applySplitResult(result: EvaluateRouteSplitsResult) {
     const hints = new Map<string, SplitHint>();
@@ -226,7 +234,7 @@ export function DiscoveryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {clusters.map((c) => (
+                  {pageClusters.map((c) => (
                     <ClusterRow
                       key={c.mountainId}
                       cluster={c}
@@ -241,6 +249,11 @@ export function DiscoveryPage() {
                   ))}
                 </tbody>
               </table>
+              <Pagination
+                page={Math.min(page, pageCount)}
+                totalItems={clusters.length}
+                onPageChange={setPage}
+              />
             </>
           )}
         </div>
@@ -262,6 +275,7 @@ export function DiscoveryPage() {
                 }
               >
                 <OperatorRouteMap
+                  title={`Discovery map - ${selectedMountainId}`}
                   geometry={null}
                   routeState="none"
                   routes={mapRoutes}
@@ -325,9 +339,16 @@ function ClusterRow({
     : '—';
 
   return (
-    <tr className={selected ? 'selected-row' : ''}>
+    <tr className={selected ? 'selected-row' : ''} style={{ cursor: 'pointer' }} onClick={onSelect}>
       <td>
-        <button className="link-button" type="button" onClick={onSelect}>
+        <button
+          className="link-button"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect();
+          }}
+        >
           <span className="cell-name">{cluster.mountainId}</span>
         </button>
         {splitHint && splitHint.valid && (
@@ -347,7 +368,10 @@ function ClusterRow({
         {splitHint?.valid && (
           <button
             className="btn btn-ghost"
-            onClick={onExecuteSplit}
+            onClick={(event) => {
+              event.stopPropagation();
+              onExecuteSplit();
+            }}
             disabled={executingSplit}
             style={{ fontSize: 12, padding: '5px 10px' }}
           >
@@ -356,7 +380,10 @@ function ClusterRow({
         )}
         <button
           className="btn btn-primary"
-          onClick={onPromote}
+          onClick={(event) => {
+            event.stopPropagation();
+            onPromote();
+          }}
           disabled={promoting}
           style={{ fontSize: 12, padding: '5px 10px' }}
         >

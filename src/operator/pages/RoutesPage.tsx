@@ -1,5 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
+import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
 import { fetchRouteCoverage, fetchRouteDetail, renameRoute } from '../data/routesRepository';
 import type {
   GeoJsonLineString,
@@ -25,7 +26,7 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
   const [error, setError] = useState<string | null>(null);
   const [mountainFilter, setMountainFilter] = useState<string>('all');
   const [stateFilter, setStateFilter] = useState<string>('all');
-  const [mapExpanded, setMapExpanded] = useState(false);
+  const [page, setPage] = useState(1);
   const [renamingRouteId, setRenamingRouteId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -95,6 +96,16 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
     if (stateFilter !== 'all' && row.routeState !== stateFilter) return false;
     return true;
   }), [rows, mountainFilter, stateFilter]);
+  const pageCount = getPageCount(filteredRows.length);
+  const pageRows = getPageItems(filteredRows, Math.min(page, pageCount));
+
+  useEffect(() => {
+    setPage(1);
+  }, [mountainFilter, stateFilter]);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
 
   const selectedRow = useMemo(
     () => rows.find((row) => row.routeId === selectedRouteId) ?? null,
@@ -168,7 +179,14 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row) => {
+              {filteredRows.length === 0 && (
+                <tr>
+                  <td colSpan={7} style={{ color: 'var(--text-3)', textAlign: 'center', padding: 16 }}>
+                    No routes found.
+                  </td>
+                </tr>
+              )}
+              {pageRows.map((row) => {
                 const isSelected = row.routeId === selectedRouteId;
                 return (
                   <tr
@@ -184,7 +202,7 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
                           <span className="cell-sub">{row.routeId}</span>
                         </>
                       ) : (
-                        <span className="cell-sub">—</span>
+                        <span className="cell-sub">No route</span>
                       )}
                     </td>
                     <td>
@@ -201,6 +219,11 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
               })}
             </tbody>
           </table>
+          <Pagination
+            page={Math.min(page, pageCount)}
+            totalItems={filteredRows.length}
+            onPageChange={setPage}
+          />
         </div>
 
         <div className="route-detail-panel">
@@ -208,30 +231,19 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
               <div className="card-title" style={{ margin: 0, flex: 1 }}>
                 {detail && detail.routeId !== null
-                  ? `${detail.routeDisplayName ?? detail.routeId} — ${detail.mountainDisplayName}`
+                  ? `${detail.routeDisplayName ?? detail.routeId} - ${detail.mountainDisplayName}`
                   : 'Select a route'}
               </div>
               {detail && detail.routeId !== null && (
-                <>
-                  <button
-                    className="btn btn-ghost"
-                    type="button"
-                    title="루트 이름 변경"
-                    onClick={() => setRenamingRouteId(detail.routeId)}
-                    style={{ fontSize: 14, padding: '3px 8px', lineHeight: 1 }}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    className="btn btn-ghost"
-                    type="button"
-                    title="지도 확대"
-                    onClick={() => setMapExpanded(true)}
-                    style={{ fontSize: 15, padding: '3px 8px', lineHeight: 1 }}
-                  >
-                    ⤢
-                  </button>
-                </>
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  title="Rename route"
+                  onClick={() => setRenamingRouteId(detail.routeId)}
+                  style={{ fontSize: 14, padding: '3px 8px', lineHeight: 1 }}
+                >
+                  Rename
+                </button>
               )}
             </div>
             {detail && detail.routeId !== null ? (
@@ -255,7 +267,7 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
                   </div>
                 </div>
                 <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing route preview.</span></div>}>
-                  <OperatorRouteMap geometry={geometry} routeState={detail.routeState} />
+                  <OperatorRouteMap geometry={geometry} routeState={detail.routeState} title={detail.routeDisplayName ?? detail.routeId} />
                 </Suspense>
               </>
             ) : (
@@ -280,32 +292,6 @@ export function RoutesPage({ selectedRouteId, onSelectRoute }: RoutesPageProps) 
         />
       )}
 
-      {mapExpanded && detail && detail.routeId !== null && (
-        <div className="modal-backdrop" onClick={() => setMapExpanded(false)}>
-          <div
-            className="modal map-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <h3 className="modal-title" style={{ margin: 0, flex: 1 }}>
-                {detail.routeDisplayName ?? detail.routeId}
-                <span style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: 6 }}>— {detail.mountainDisplayName}</span>
-              </h3>
-              <button
-                className="btn btn-ghost"
-                type="button"
-                onClick={() => setMapExpanded(false)}
-                style={{ fontSize: 16, padding: '2px 8px', lineHeight: 1 }}
-              >
-                ✕
-              </button>
-            </div>
-            <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing route preview.</span></div>}>
-              <OperatorRouteMap geometry={geometry} routeState={detail.routeState} />
-            </Suspense>
-          </div>
-        </div>
-      )}
     </>
   );
 }
@@ -335,12 +321,12 @@ function RenameModal({
   return (
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="modal-title">루트 이름 변경</h3>
+        <h3 className="modal-title">Rename route</h3>
         <p className="modal-body">
           Route ID: <strong>{routeId}</strong>
         </p>
         <label className="modal-label">
-          새 이름
+          Display name
           <input
             ref={inputRef}
             className="modal-input"
@@ -352,13 +338,13 @@ function RenameModal({
           />
         </label>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onCancel}>취소</button>
+          <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
           <button
             className="btn btn-primary"
             onClick={onConfirm}
             disabled={value.trim() === '' || value.trim() === currentName}
           >
-            저장
+            Save
           </button>
         </div>
       </div>

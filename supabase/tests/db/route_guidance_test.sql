@@ -1,6 +1,6 @@
 begin;
 
-select plan(23);
+select plan(25);
 
 select has_table('public', 'trail_cells', 'trail_cells table exists');
 select has_table('public', 'trail_cell_transitions', 'trail_cell_transitions table exists');
@@ -9,6 +9,7 @@ select has_function('public', 'latest_canonical_trail', array['text'], 'latest t
 select has_function('public', 'snap_position_to_trail', array['text', 'double precision', 'double precision'], 'snap RPC exists');
 select has_function('public', 'accepted_route_points', array['text'], 'accepted route points RPC exists');
 select has_function('public', 'route_quality_inputs', array['text'], 'route quality input RPC exists');
+select has_function('public', 'purge_session_raw_points', array['uuid'], 'raw point purge RPC exists');
 select has_view('public', 'operator_route_coverage', 'operator route coverage view exists');
 select has_view('public', 'operator_route_quality_detail', 'operator route quality detail view exists');
 select has_view('public', 'operator_quality_summary', 'operator quality summary view exists');
@@ -16,10 +17,14 @@ select has_view('public', 'operator_quality_summary', 'operator quality summary 
 insert into public.mountains (id, display_name, source)
 values ('quality-test-mountain', 'Quality Test Mountain', 'test');
 
+insert into public.routes (id, mountain_id, display_name)
+values ('quality-test-main', 'quality-test-mountain', 'Main');
+
 insert into public.hiking_sessions (
   id,
   user_id,
   mountain_id,
+  route_id,
   client_session_key,
   started_at,
   ended_at,
@@ -32,6 +37,7 @@ insert into public.hiking_sessions (
     '11111111-1111-1111-1111-111111111111',
     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     'quality-test-mountain',
+    'quality-test-main',
     'route-quality-1',
     '2026-05-08T01:00:00Z',
     '2026-05-08T01:30:00Z',
@@ -44,6 +50,7 @@ insert into public.hiking_sessions (
     '22222222-2222-2222-2222-222222222222',
     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     'quality-test-mountain',
+    'quality-test-main',
     'route-quality-2',
     '2026-05-08T02:00:00Z',
     '2026-05-08T02:30:00Z',
@@ -101,10 +108,17 @@ insert into public.rejected_track_points (
 );
 
 select results_eq(
+  $$ select deleted_track_point_count, deleted_rejected_point_count
+     from public.purge_session_raw_points('22222222-2222-2222-2222-222222222222') $$,
+  $$ values (1::integer, 1::integer) $$,
+  'raw purge RPC deletes transient accepted and rejected points'
+);
+
+select results_eq(
   $$ select accepted_point_count, rejected_point_count, latest_evidence_at
-     from public.route_quality_inputs('quality-test-mountain') $$,
-  $$ values (5::integer, 5::integer, '2026-05-08T02:10:00Z'::timestamptz) $$,
-  'route quality input RPC returns evidence counts and latest timestamp'
+     from public.route_quality_inputs('quality-test-main') $$,
+  $$ values (5::integer, 5::integer, '2026-05-08T02:30:00Z'::timestamptz) $$,
+  'route quality input RPC returns evidence counts after raw purge'
 );
 
 select policies_are(
@@ -135,8 +149,16 @@ select policies_are(
   'mountain catalog is readable'
 );
 
+insert into public.mountains (id, display_name, source)
+values ('beta-mountain', 'Beta Mountain', 'test')
+on conflict (id) do nothing;
+
+insert into public.routes (id, mountain_id, display_name)
+values ('beta-mountain-main', 'beta-mountain', 'Main Trail')
+on conflict (id) do nothing;
+
 insert into public.canonical_trails (
-  mountain_id,
+  route_id,
   version,
   geom,
   confidence,
@@ -145,7 +167,7 @@ insert into public.canonical_trails (
   branch_ambiguity_score,
   gps_quality_score
 ) values (
-  'beta-mountain',
+  'beta-mountain-main',
   100,
   'LINESTRING(127.0000 37.5000,127.0010 37.5010)'::geography,
   0.81,
@@ -156,7 +178,7 @@ insert into public.canonical_trails (
 );
 
 select results_eq(
-  $$ select route_state, version from public.latest_canonical_trail('beta-mountain') $$,
+  $$ select route_state, version from public.latest_canonical_trail('beta-mountain-main') $$,
   $$ values ('recommended'::text, 100) $$,
   'latest trail RPC returns newest route state'
 );
@@ -174,9 +196,9 @@ select is(
 select results_eq(
   $$ select accepted_point_count, rejected_point_count, latest_evidence_at
      from public.operator_route_quality_detail
-     where mountain_id = 'quality-test-mountain' $$,
-  $$ values (5::integer, 5::integer, '2026-05-08T02:10:00Z'::timestamptz) $$,
-  'operator route quality detail exposes evidence counts'
+     where route_id = 'quality-test-main' $$,
+  $$ values (5::integer, 5::integer, '2026-05-08T02:30:00Z'::timestamptz) $$,
+  'operator route quality detail exposes evidence counts after raw purge'
 );
 
 select is_empty(
@@ -203,7 +225,7 @@ select isnt(
 select isnt(
   (
     select trail_geojson
-    from public.latest_canonical_trail('beta-mountain')
+    from public.latest_canonical_trail('beta-mountain-main')
     limit 1
   ),
   null,
@@ -213,7 +235,7 @@ select isnt(
 select ok(
   (
     select distance_meters <= 25
-    from public.snap_position_to_trail('beta-mountain', 37.50001, 127.00001)
+    from public.snap_position_to_trail('beta-mountain-main', 37.50001, 127.00001)
     limit 1
   ),
   'snap RPC computes an on-route distance'

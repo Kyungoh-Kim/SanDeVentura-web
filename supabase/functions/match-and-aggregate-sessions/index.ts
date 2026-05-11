@@ -11,10 +11,20 @@ import {
   type TrailTransition,
 } from '../_shared/route_inference.ts';
 
-const matchRadiusMeters = 75;
 const batchSize = 50;
 
-type SupabaseClient = ReturnType<typeof createClient>;
+type SupabaseClient = any;
+
+export type SessionCellAttributionRow = {
+  mountainId: string;
+  targetKind: 'route' | 'candidate';
+  routeId: string | null;
+  cellKey: string;
+  pointCount: number;
+  avgAccuracy: number | null;
+  avgAltitude: number | null;
+  lastSeenAt: string | null;
+};
 
 export async function handleMatchAndAggregateSessions(
   request: Request,
@@ -47,12 +57,16 @@ export async function handleMatchAndAggregateSessions(
       affectedRoutes: 0,
       orphanCellsAdded: 0,
       candidateClustersFormed: 0,
+      purgedTrackPointCount: 0,
+      purgedRejectedPointCount: 0,
     });
   }
 
   const affectedRouteIds = new Set<string>();
   let orphanCellsAdded = 0;
   let processedCount = 0;
+  let purgedTrackPointCount = 0;
+  let purgedRejectedPointCount = 0;
 
   for (const session of sessions) {
     const result = await processSession(supabase, session.id, session.mountain_id);
@@ -64,6 +78,8 @@ export async function handleMatchAndAggregateSessions(
       affectedRouteIds.add(routeId);
     }
     orphanCellsAdded += result.orphanCellsAdded;
+    purgedTrackPointCount += result.purgedTrackPointCount;
+    purgedRejectedPointCount += result.purgedRejectedPointCount;
     processedCount += 1;
   }
 
@@ -81,6 +97,8 @@ export async function handleMatchAndAggregateSessions(
     affectedRoutes: affectedRouteIds.size,
     orphanCellsAdded,
     candidateClustersFormed: clusters?.length ?? 0,
+    purgedTrackPointCount,
+    purgedRejectedPointCount,
   });
 }
 
@@ -90,17 +108,41 @@ async function processSession(
   supabase: SupabaseClient,
   sessionId: string,
   mountainId: string,
-): Promise<{ affectedRouteIds: string[]; orphanCellsAdded: number; error?: string }> {
+): Promise<{
+  affectedRouteIds: string[];
+  orphanCellsAdded: number;
+  purgedTrackPointCount: number;
+  purgedRejectedPointCount: number;
+  error?: string;
+}> {
   const points = await fetchSessionPoints(supabase, sessionId);
   if (points.length === 0) {
     await markSessionProcessed(supabase, sessionId);
-    return { affectedRouteIds: [], orphanCellsAdded: 0 };
+    const purgeResult = await purgeSessionRawPoints(supabase, sessionId);
+    if (purgeResult.error) {
+      return emptySessionResult(purgeResult.error);
+    }
+    return {
+      affectedRouteIds: [],
+      orphanCellsAdded: 0,
+      purgedTrackPointCount: purgeResult.trackPointCount,
+      purgedRejectedPointCount: purgeResult.rejectedPointCount,
+    };
   }
 
   const { cells, transitions } = buildSessionHitmap(points);
   if (cells.length === 0) {
     await markSessionProcessed(supabase, sessionId);
-    return { affectedRouteIds: [], orphanCellsAdded: 0 };
+    const purgeResult = await purgeSessionRawPoints(supabase, sessionId);
+    if (purgeResult.error) {
+      return emptySessionResult(purgeResult.error);
+    }
+    return {
+      affectedRouteIds: [],
+      orphanCellsAdded: 0,
+      purgedTrackPointCount: purgeResult.trackPointCount,
+      purgedRejectedPointCount: purgeResult.rejectedPointCount,
+    };
   }
 
   const [storedCells, bootstrapInfo] = await Promise.all([
@@ -142,8 +184,8 @@ async function processSession(
       accumulateTrailCells(supabase, routeId, sessionId, routeCells),
       accumulateTrailTransitions(supabase, routeId, sessionId, routeTransitions),
     ]);
-    if (cellError) return { affectedRouteIds: [], orphanCellsAdded: 0, error: cellError };
-    if (transitionError) return { affectedRouteIds: [], orphanCellsAdded: 0, error: transitionError };
+    if (cellError) return emptySessionResult(cellError);
+    if (transitionError) return emptySessionResult(transitionError);
     await recordSessionAssignment(supabase, sessionId, routeId, routeCells.length, routeTransitions.length);
   }
 
@@ -167,13 +209,29 @@ async function processSession(
     );
   }
 
+  const attributionError = await saveSessionCellAttributions(
+    supabase,
+    sessionId,
+    buildSessionCellAttributionRows(mountainId, routeGroups, orphanCells),
+  );
+  if (attributionError) {
+    return emptySessionResult(attributionError);
+  }
+
   if (routeGroups.size === 0) {
     await markSessionProcessed(supabase, sessionId);
+  }
+
+  const purgeResult = await purgeSessionRawPoints(supabase, sessionId);
+  if (purgeResult.error) {
+    return emptySessionResult(purgeResult.error);
   }
 
   return {
     affectedRouteIds: [...routeGroups.keys()],
     orphanCellsAdded,
+    purgedTrackPointCount: purgeResult.trackPointCount,
+    purgedRejectedPointCount: purgeResult.rejectedPointCount,
   };
 }
 
@@ -200,7 +258,48 @@ async function fetchSessionPoints(
     .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
 }
 
-type StoredRouteCell = { routeId: string; lat: number; lon: number };
+type RawPurgeResult = {
+  trackPointCount: number;
+  rejectedPointCount: number;
+  error?: string;
+};
+
+async function purgeSessionRawPoints(
+  supabase: SupabaseClient,
+  sessionId: string,
+): Promise<RawPurgeResult> {
+  const { data, error } = await supabase.rpc('purge_session_raw_points', {
+    p_session_id: sessionId,
+  });
+
+  if (error) {
+    return { trackPointCount: 0, rejectedPointCount: 0, error: error.message };
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    trackPointCount: row?.deleted_track_point_count ?? 0,
+    rejectedPointCount: row?.deleted_rejected_point_count ?? 0,
+  };
+}
+
+function emptySessionResult(error: string): {
+  affectedRouteIds: string[];
+  orphanCellsAdded: number;
+  purgedTrackPointCount: number;
+  purgedRejectedPointCount: number;
+  error: string;
+} {
+  return {
+    affectedRouteIds: [],
+    orphanCellsAdded: 0,
+    purgedTrackPointCount: 0,
+    purgedRejectedPointCount: 0,
+    error,
+  };
+}
+
+export type StoredRouteCell = { routeId: string; cellKey: string; lat: number; lon: number };
 
 async function fetchMountainRouteCells(
   supabase: SupabaseClient,
@@ -212,6 +311,7 @@ async function fetchMountainRouteCells(
   if (error || !data) return [];
   return (data as any[]).map((row) => ({
     routeId: row.route_id,
+    cellKey: row.cell_key,
     lat: Number(row.lat),
     lon: Number(row.lon),
   }));
@@ -256,22 +356,12 @@ async function findBootstrapRoute(
 
 // ── Route matching ────────────────────────────────────────────────────────────
 
-function findNearestRouteCell(
+export function findNearestRouteCell(
   sessionCell: TrailCell,
   storedCells: StoredRouteCell[],
 ): string | null {
-  let best: string | null = null;
-  let bestDist = matchRadiusMeters;
-
-  for (const stored of storedCells) {
-    const dist = haversineMeters(sessionCell.lat, sessionCell.lon, stored.lat, stored.lon);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = stored.routeId;
-    }
-  }
-
-  return best;
+  const exactCell = storedCells.find((stored) => stored.cellKey === sessionCell.cellKey);
+  return exactCell?.routeId ?? null;
 }
 
 function isWithinBbox(cell: TrailCell, bbox: BoundingBox): boolean {
@@ -393,6 +483,18 @@ async function saveCandidateCells(
   return (data as number) ?? 0;
 }
 
+async function saveSessionCellAttributions(
+  supabase: SupabaseClient,
+  sessionId: string,
+  rows: SessionCellAttributionRow[],
+): Promise<string | null> {
+  const { error } = await supabase.rpc('replace_session_cell_attributions', {
+    p_session_id: sessionId,
+    p_rows: rows,
+  });
+  return error ? error.message : null;
+}
+
 async function recordSessionAssignment(
   supabase: SupabaseClient,
   sessionId: string,
@@ -504,6 +606,44 @@ type ClassifiedTransitions = {
   candidateToRoute: Map<string, TrailTransition[]>;
 };
 
+export function buildSessionCellAttributionRows(
+  mountainId: string,
+  routeGroups: Map<string, TrailCell[]>,
+  candidateCells: TrailCell[],
+): SessionCellAttributionRow[] {
+  const rows: SessionCellAttributionRow[] = [];
+
+  for (const [routeId, routeCells] of routeGroups) {
+    for (const cell of routeCells) {
+      rows.push(cellAttributionRow(mountainId, 'route', routeId, cell));
+    }
+  }
+
+  for (const cell of candidateCells) {
+    rows.push(cellAttributionRow(mountainId, 'candidate', null, cell));
+  }
+
+  return rows;
+}
+
+function cellAttributionRow(
+  mountainId: string,
+  targetKind: 'route' | 'candidate',
+  routeId: string | null,
+  cell: TrailCell,
+): SessionCellAttributionRow {
+  return {
+    mountainId,
+    targetKind,
+    routeId,
+    cellKey: cell.cellKey,
+    pointCount: cell.pointCount,
+    avgAccuracy: cell.avgAccuracy,
+    avgAltitude: cell.avgAltitude,
+    lastSeenAt: cell.lastSeenAt,
+  };
+}
+
 function classifyTransitions(
   transitions: TrailTransition[],
   cellKeyToRouteId: Map<string, string>,
@@ -536,17 +676,6 @@ function classifyTransitions(
   }
 
   return { routeInternal, candidateInternal, routeToCandidate, candidateToRoute };
-}
-
-function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6_371_000;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 if (import.meta.main) {

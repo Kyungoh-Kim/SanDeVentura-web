@@ -142,35 +142,6 @@ export async function handleUploadSession(request: Request): Promise<Response> {
     );
   }
 
-  const rejectedInsert = validation.rejected.length === 0
-    ? { error: null }
-    : await supabase.from('rejected_track_points').insert(
-      validation.rejected.map((point) => ({
-        session_id: sessionId,
-        reason: point.reason,
-        recorded_at: point.recordedAt,
-        lat: point.lat,
-        lon: point.lon,
-        altitude: point.altitude,
-        accuracy: point.accuracy,
-        speed: point.speed,
-        point_sequence_index: point.sequenceIndex,
-        debug_payload_sample: {
-          reason: point.reason,
-          sequenceIndex: point.sequenceIndex,
-        },
-        debug_payload_expires_at: debugExpiresAt(),
-      })),
-    );
-
-  if (rejectedInsert.error) {
-    await cleanupIncompleteSession(supabase, sessionId);
-    return jsonResponse(
-      { success: false, errors: [rejectedInsert.error.message] },
-      500,
-    );
-  }
-
   const finalStatus = validation.accepted.length === 0 ? 'rejected' : 'ingested';
   const updatedSession = await supabase
     .from('hiking_sessions')
@@ -262,12 +233,6 @@ async function cleanupIncompleteSession(
 function retentionReviewAt(): string {
   const date = new Date();
   date.setDate(date.getDate() + 90);
-  return date.toISOString();
-}
-
-function debugExpiresAt(): string {
-  const date = new Date();
-  date.setDate(date.getDate() + 7);
   return date.toISOString();
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
 import { type OperatorOverviewMetrics, type OperatorRouteCoverage } from '../data/readModels';
 import { fetchOperatorSummary, fetchRouteCoverage } from '../data/routesRepository';
 
@@ -8,6 +9,7 @@ export function OverviewPage() {
   const [coverage, setCoverage] = useState<OperatorRouteCoverage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedMountain, setSelectedMountain] = useState<string>('all');
+  const [page, setPage] = useState(1);
 
   const mountains = useMemo(() => {
     const seen = new Map<string, string>();
@@ -19,6 +21,16 @@ export function OverviewPage() {
     () => coverage.filter((r) => r.routeId !== null && (selectedMountain === 'all' || r.mountainId === selectedMountain)),
     [coverage, selectedMountain],
   );
+  const pageCount = getPageCount(filteredCoverage.length);
+  const pageCoverage = getPageItems(filteredCoverage, Math.min(page, pageCount));
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedMountain]);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,12 +104,19 @@ export function OverviewPage() {
 
           {filteredCoverage.length > 0 ? (
             <div className="mountain-cards">
-              {filteredCoverage.map((row) => (
+              {pageCoverage.map((row) => (
                 <ConfidenceCard key={row.routeId ?? row.mountainId} row={row} />
               ))}
             </div>
           ) : (
             <div style={{ color: 'var(--text-3)', fontSize: 13 }}>No routes loaded.</div>
+          )}
+          {filteredCoverage.length > 0 && (
+            <Pagination
+              page={Math.min(page, pageCount)}
+              totalItems={filteredCoverage.length}
+              onPageChange={setPage}
+            />
           )}
 
           <details style={{ marginTop: 14 }}>

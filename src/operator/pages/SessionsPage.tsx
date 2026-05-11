@@ -1,11 +1,40 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { cellToLatLng } from 'h3-js';
 
-import { type OperatorSessionIngestion } from '../data/readModels';
-import { fetchSessionIngestion } from '../data/routesRepository';
+import {
+  type CandidateCell,
+  type OperatorSessionCellAttribution,
+  type OperatorSessionIngestion,
+  type OperatorSessionRouteAttribution,
+} from '../data/readModels';
+import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
+import {
+  fetchSessionCellAttribution,
+  fetchSessionIngestion,
+  fetchSessionRouteAttribution,
+} from '../data/routesRepository';
+
+const OperatorRouteMap = lazy(() =>
+  import('../components/OperatorRouteMap').then((module) => ({
+    default: module.OperatorRouteMap,
+  })),
+);
+
+type DetailState = {
+  routes: OperatorSessionRouteAttribution[];
+  cells: OperatorSessionCellAttribution[];
+  status: 'idle' | 'loading' | 'ready' | 'error';
+};
+
+const emptyDetail: DetailState = { routes: [], cells: [], status: 'idle' };
 
 export function SessionsPage() {
   const [rows, setRows] = useState<OperatorSessionIngestion[] | null>(null);
   const [selected, setSelected] = useState<OperatorSessionIngestion | null>(null);
+  const [detail, setDetail] = useState<DetailState>(emptyDetail);
+  const [stateFilter, setStateFilter] = useState('all');
+  const [mountainFilter, setMountainFilter] = useState('all');
+  const [page, setPage] = useState(1);
 
   const loadRows = useCallback(() => {
     fetchSessionIngestion().then(setRows).catch(() => setRows(null));
@@ -15,10 +44,87 @@ export function SessionsPage() {
     loadRows();
   }, [loadRows]);
 
-  const uploaded = rows?.filter((r) => r.uploadState === 'uploaded').length ?? 0;
-  const totalAccepted = rows?.reduce((s, r) => s + r.acceptedPointCount, 0) ?? 0;
-  const totalRejected = rows?.reduce((s, r) => s + r.rejectedPointCount, 0) ?? 0;
+  useEffect(() => {
+    if (!selected) {
+      setDetail(emptyDetail);
+      return;
+    }
+
+    let active = true;
+    setDetail({ routes: [], cells: [], status: 'loading' });
+
+    Promise.all([
+      fetchSessionRouteAttribution(selected.sessionId),
+      selected.attributionPrecision === 'exact'
+        ? fetchSessionCellAttribution(selected.sessionId)
+        : Promise.resolve([]),
+    ])
+      .then(([routes, cells]) => {
+        if (active) setDetail({ routes, cells, status: 'ready' });
+      })
+      .catch(() => {
+        if (active) setDetail({ routes: [], cells: [], status: 'error' });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selected]);
+
+  const stats = useMemo(() => {
+    const list = rows ?? [];
+    return {
+      total: list.length,
+      ingested: list.filter((row) => row.pipelineState === 'ingested').length,
+      exact: list.filter((row) => row.attributionPrecision === 'exact').length,
+      routeCells: list.reduce((sum, row) => sum + row.matchedRouteCellCount, 0),
+      candidateCells: list.reduce((sum, row) => sum + row.candidateCellCount, 0),
+    };
+  }, [rows]);
+
+  const stateOptions = useMemo(() => {
+    const states = new Set((rows ?? []).map((row) => row.pipelineState));
+    return [...states].sort();
+  }, [rows]);
+
+  const mountainOptions = useMemo(() => {
+    const mountains = new Map<string, string>();
+    for (const row of rows ?? []) {
+      mountains.set(row.mountainId, row.mountainDisplayName);
+    }
+    return [...mountains.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [rows]);
+
+  const filteredRows = useMemo(() => (rows ?? []).filter((row) => {
+    if (stateFilter !== 'all' && row.pipelineState !== stateFilter) return false;
+    if (mountainFilter !== 'all' && row.mountainId !== mountainFilter) return false;
+    return true;
+  }), [rows, stateFilter, mountainFilter]);
+
+  const pageCount = getPageCount(filteredRows.length);
+  const pageRows = getPageItems(filteredRows, Math.min(page, pageCount));
+
+  useEffect(() => {
+    setPage(1);
+  }, [stateFilter, mountainFilter]);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  useEffect(() => {
+    if (selected && !filteredRows.some((row) => row.sessionId === selected.sessionId)) {
+      setSelected(null);
+    }
+  }, [filteredRows, selected]);
+
   const unavailable = rows === null;
+  const candidateCells = detail.cells.filter((cell) => cell.targetKind === 'candidate');
+  const routeCells = detail.cells.filter((cell) => cell.targetKind === 'route');
+  const sessionMapCells = useMemo(
+    () => detail.cells.map(sessionCellToMapCell).filter((cell): cell is CandidateCell => cell !== null),
+    [detail.cells],
+  );
 
   return (
     <>
@@ -26,33 +132,40 @@ export function SessionsPage() {
         <h2>Sessions</h2>
         <span className="page-badge">Operator only</span>
         <div style={{ flex: 1 }} />
-        <button className="btn btn-ghost" type="button" onClick={loadRows}>↻ Refresh</button>
+        <button className="btn btn-ghost" type="button" onClick={loadRows}>Refresh</button>
       </div>
 
-      <div className="stat-row" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-        <div className="stat-card">
-          <div className="stat-label">Total sessions</div>
-          <div className="stat-value">{unavailable ? '–' : rows!.length}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Uploaded</div>
-          <div className="stat-value good">{unavailable ? '–' : uploaded}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Accepted points</div>
-          <div className="stat-value">{unavailable ? '–' : totalAccepted.toLocaleString()}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Rejected points</div>
-          <div className="stat-value">{unavailable ? '–' : totalRejected.toLocaleString()}</div>
-        </div>
+      <div className="stat-row" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
+        <StatCard label="Total sessions" value={unavailable ? '-' : stats.total} />
+        <StatCard label="Ingested" value={unavailable ? '-' : stats.ingested} tone="good" />
+        <StatCard label="Exact attribution" value={unavailable ? '-' : stats.exact} />
+        <StatCard label="Route cells" value={unavailable ? '-' : stats.routeCells} />
+        <StatCard label="Candidate cells" value={unavailable ? '-' : stats.candidateCells} tone="warn" />
       </div>
 
       <div className="sessions-layout">
         <div>
           <div className="filter-row">
-            <select className="filter-select" disabled><option>State: All</option></select>
-            <select className="filter-select" disabled><option>Mountain: All</option></select>
+            <select
+              className="filter-select"
+              value={stateFilter}
+              onChange={(e) => setStateFilter(e.target.value)}
+            >
+              <option value="all">State: All</option>
+              {stateOptions.map((state) => (
+                <option key={state} value={state}>{state}</option>
+              ))}
+            </select>
+            <select
+              className="filter-select"
+              value={mountainFilter}
+              onChange={(e) => setMountainFilter(e.target.value)}
+            >
+              <option value="all">Mountain: All</option>
+              {mountainOptions.map(([id, name]) => (
+                <option key={id} value={id}>{name}</option>
+              ))}
+            </select>
             <div className="filter-spacer" />
           </div>
           <div
@@ -61,6 +174,11 @@ export function SessionsPage() {
           >
             <div className="table-panel-header">
               <span className="table-panel-title">Session ingestion</span>
+              {!unavailable && (
+                <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                  {filteredRows.length} session{filteredRows.length !== 1 ? 's' : ''}
+                </span>
+              )}
             </div>
             {unavailable ? (
               <div style={{ padding: '24px 16px', color: 'var(--text-3)', fontSize: 13 }}>
@@ -73,21 +191,22 @@ export function SessionsPage() {
                     <th>Session</th>
                     <th>Mountain</th>
                     <th>State</th>
-                    <th>Consent</th>
+                    <th>Precision</th>
+                    <th>Route cells</th>
+                    <th>Candidate cells</th>
                     <th>Accepted</th>
                     <th>Rejected</th>
-                    <th>Last error</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows!.length === 0 ? (
+                  {filteredRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7} style={{ color: 'var(--text-3)', textAlign: 'center', padding: '16px' }}>
+                      <td colSpan={8} style={{ color: 'var(--text-3)', textAlign: 'center', padding: '16px' }}>
                         No sessions found.
                       </td>
                     </tr>
                   ) : (
-                    rows!.map((row) => (
+                    pageRows.map((row) => (
                       <tr
                         key={row.sessionId}
                         className={selected?.sessionId === row.sessionId ? 'selected-row' : ''}
@@ -95,95 +214,225 @@ export function SessionsPage() {
                         style={{ cursor: 'pointer' }}
                       >
                         <td>
-                          <span className="cell-name cell-mono">{row.sessionId}</span>
+                          <span className="cell-name cell-mono">{shortId(row.sessionId)}</span>
+                          <span className="cell-sub">{row.sessionId}</span>
                         </td>
-                        <td>{row.mountainId}</td>
                         <td>
-                          <span className={`status-badge ${row.uploadState}`}>{row.uploadState}</span>
+                          <span className="cell-name">{row.mountainDisplayName}</span>
+                          <span className="cell-sub">{row.mountainId}</span>
                         </td>
-                        <td>{row.consentVersion ?? '-'}</td>
-                        <td>{row.acceptedPointCount}</td>
-                        <td>{row.rejectedPointCount}</td>
-                        <td style={{ color: row.lastError ? 'var(--red)' : 'var(--text-3)' }}>
-                          {row.lastError ?? '-'}
-                        </td>
+                        <td><span className={`status-badge ${row.pipelineState}`}>{row.pipelineState}</span></td>
+                        <td><span className={`status-badge ${row.attributionPrecision}`}>{row.attributionPrecision}</span></td>
+                        <td>{formatCellsAndPoints(row.matchedRouteCellCount, row.matchedRoutePointCount)}</td>
+                        <td>{formatCellsAndPoints(row.candidateCellCount, row.candidatePointCount)}</td>
+                        <td>{row.acceptedPointCount.toLocaleString()}</td>
+                        <td>{row.rejectedPointCount.toLocaleString()}</td>
                       </tr>
                     ))
                   )}
                 </tbody>
               </table>
             )}
+            {!unavailable && (
+              <Pagination
+                page={Math.min(page, pageCount)}
+                totalItems={filteredRows.length}
+                onPageChange={setPage}
+              />
+            )}
           </div>
         </div>
 
         <div className="side-stack">
           {selected ? (
-            <div className="card">
-              <div className="card-title">Selected session</div>
-              <div className="score-row">
-                <span className="score-label">Session ID</span>
-                <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{selected.sessionId}</span>
+            <>
+              <div className="card">
+                <div className="card-title">Selected session</div>
+                <ScoreRow label="Session ID" value={shortId(selected.sessionId)} mono />
+                <ScoreRow label="Mountain" value={selected.mountainDisplayName} />
+                <ScoreRow label="State" value={selected.pipelineState} badgeClass={selected.pipelineState} />
+                <ScoreRow label="Attribution" value={selected.attributionPrecision} badgeClass={selected.attributionPrecision} />
+                <ScoreRow label="Consent" value={selected.consentVersion ?? '-'} />
               </div>
-              <div className="score-row">
-                <span className="score-label">Mountain</span>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>{selected.mountainId}</span>
+
+              <div className="card">
+                <div className="card-title">Session H3 cells</div>
+                {detail.status === 'loading' ? (
+                  <EmptyNote>Loading session cells.</EmptyNote>
+                ) : selected.attributionPrecision !== 'exact' ? (
+                  <EmptyNote>Cell map is not available for historical aggregate sessions.</EmptyNote>
+                ) : sessionMapCells.length === 0 ? (
+                  <EmptyNote>No H3 cells available for this session.</EmptyNote>
+                ) : (
+                  <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing session cells.</span></div>}>
+                    <OperatorRouteMap
+                      title={`Session cells - ${selected.sessionId}`}
+                      geometry={null}
+                      routeState="none"
+                      cells={sessionMapCells}
+                    />
+                  </Suspense>
+                )}
               </div>
-              <div className="score-row">
-                <span className="score-label">State</span>
-                <span className={`status-badge ${selected.uploadState}`}>{selected.uploadState}</span>
+
+              <div className="card">
+                <div className="card-title">Route matches</div>
+                {detail.status === 'loading' ? (
+                  <EmptyNote>Loading route attribution.</EmptyNote>
+                ) : detail.status === 'error' ? (
+                  <EmptyNote>Route attribution not available.</EmptyNote>
+                ) : detail.routes.length === 0 ? (
+                  <EmptyNote>No matched routes for this session.</EmptyNote>
+                ) : (
+                  <div className="detail-list">
+                    {detail.routes.map((route) => (
+                      <div className="detail-item" key={route.routeId}>
+                        <div>
+                          <strong>{route.routeDisplayName}</strong>
+                          <span>{route.routeId}</span>
+                        </div>
+                        <div className="detail-metrics">
+                          <b>{route.cellCount}</b> cells
+                          <b>{route.pointCount ?? '-'}</b> points
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              <div className="score-row">
-                <span className="score-label">Consent</span>
-                <span style={{ fontSize: 12 }}>{selected.consentVersion ?? '-'}</span>
+
+              <div className="card">
+                <div className="card-title">Candidate evidence</div>
+                <ScoreRow label="Candidate cells" value={selected.candidateCellCount.toLocaleString()} />
+                <ScoreRow
+                  label="Candidate points"
+                  value={selected.candidatePointCount === null ? 'Historical aggregate only' : selected.candidatePointCount.toLocaleString()}
+                />
+                {selected.attributionPrecision !== 'exact' ? (
+                  <EmptyNote>Cell details are not available for historical aggregate sessions.</EmptyNote>
+                ) : candidateCells.length === 0 ? (
+                  <EmptyNote>No candidate cells for this session.</EmptyNote>
+                ) : (
+                  <CellList cells={candidateCells} />
+                )}
               </div>
-              <div className="score-row">
-                <span className="score-label">Accepted pts</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--green)' }}>{selected.acceptedPointCount}</span>
+
+              <div className="card">
+                <div className="card-title">Exact cell keys</div>
+                {selected.attributionPrecision !== 'exact' ? (
+                  <EmptyNote>Cell details are not available for historical aggregate sessions.</EmptyNote>
+                ) : routeCells.length === 0 ? (
+                  <EmptyNote>No route cell details for this session.</EmptyNote>
+                ) : (
+                  <CellList cells={routeCells} />
+                )}
               </div>
-              <div className="score-row">
-                <span className="score-label">Rejected pts</span>
-                <span style={{ fontSize: 13, fontWeight: 700 }}>{selected.rejectedPointCount}</span>
-              </div>
-              {selected.lastError && (
-                <div style={{ marginTop: 8, padding: '8px 10px', background: 'var(--red-bg)', borderRadius: 5, fontSize: 12, color: 'var(--red)' }}>
-                  {selected.lastError}
-                </div>
-              )}
-            </div>
+            </>
           ) : (
             <div className="card">
               <div className="card-title">Session detail</div>
-              <p style={{ fontSize: 13, color: 'var(--text-3)' }}>Click a row to inspect session detail.</p>
+              <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
+                Click a row to inspect route and candidate cell attribution.
+              </p>
             </div>
           )}
 
           <div className="card">
-            <div className="card-title">Privacy &amp; RLS</div>
-            <div className="check-item">
-              <span className="check-dot">✓</span>
-              Raw traces protected
-            </div>
-            <div className="check-item">
-              <span className="check-dot">✓</span>
-              Consent before sync
-            </div>
-            <div className="check-item">
-              <span className="check-dot">✓</span>
-              You can see only yours
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="card-title">Feature highlights</div>
-            <ul className="bullet-list">
-              <li>Upload queue health</li>
-              <li>Consent before sync</li>
-              <li>Accepted / rejected split</li>
-              <li>Accepted / rejected summary</li>
-            </ul>
+            <div className="card-title">Privacy boundary</div>
+            <div className="check-item"><span className="check-dot">OK</span>Raw traces protected</div>
+            <div className="check-item"><span className="check-dot">OK</span>No coordinates in session detail</div>
+            <div className="check-item"><span className="check-dot">OK</span>Cell keys only for diagnostics</div>
           </div>
         </div>
       </div>
     </>
   );
+}
+
+function StatCard({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string | number;
+  tone?: 'good' | 'warn' | 'bad';
+}) {
+  return (
+    <div className="stat-card">
+      <div className="stat-label">{label}</div>
+      <div className={`stat-value ${tone ?? ''}`}>{typeof value === 'number' ? value.toLocaleString() : value}</div>
+    </div>
+  );
+}
+
+function ScoreRow({
+  label,
+  value,
+  mono = false,
+  badgeClass,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  badgeClass?: string;
+}) {
+  return (
+    <div className="score-row">
+      <span className="score-label">{label}</span>
+      {badgeClass ? (
+        <span className={`status-badge ${badgeClass}`}>{value}</span>
+      ) : (
+        <span style={{ fontFamily: mono ? 'ui-monospace, monospace' : undefined, fontSize: 12, fontWeight: 600 }}>
+          {value}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function EmptyNote({ children }: { children: string }) {
+  return <p style={{ fontSize: 13, color: 'var(--text-3)' }}>{children}</p>;
+}
+
+function CellList({ cells }: { cells: OperatorSessionCellAttribution[] }) {
+  return (
+    <div className="cell-key-list">
+      {cells.slice(0, 12).map((cell) => (
+        <div className="cell-key-item" key={`${cell.targetKind}-${cell.routeId ?? 'candidate'}-${cell.cellKey}`}>
+          <span className="cell-mono">{cell.cellKey}</span>
+          <b>{cell.pointCount}</b>
+        </div>
+      ))}
+      {cells.length > 12 && (
+        <div className="cell-key-more">+{cells.length - 12} more cells</div>
+      )}
+    </div>
+  );
+}
+
+function formatCellsAndPoints(cells: number, points: number | null): string {
+  return points === null
+    ? `${cells.toLocaleString()} / -`
+    : `${cells.toLocaleString()} / ${points.toLocaleString()}`;
+}
+
+function sessionCellToMapCell(cell: OperatorSessionCellAttribution): CandidateCell | null {
+  try {
+    const [lat, lon] = cellToLatLng(cell.cellKey);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return {
+      cellKey: cell.cellKey,
+      lat,
+      lon,
+      pointCount: cell.pointCount,
+      sessionCount: Math.max(1, cell.pointCount),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function shortId(value: string): string {
+  return value.length > 13 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
 }

@@ -238,6 +238,19 @@ async function executeSplit(
     p_branch_cell_keys: plan.branchCellKeys,
   });
 
+  if (!error) {
+    const attributionSync = await supabase.rpc('sync_session_cell_attributions_after_split', {
+      p_mountain_id: plan.mountainId,
+      p_original_route_id: plan.originalRouteId,
+      p_branch_point_cell_key: plan.branchPointCellKey,
+      p_segment_b_route_id: plan.newSegmentBRouteId,
+      p_segment_b_cell_keys: plan.segmentBCellKeys,
+      p_branch_route_id: plan.newBranchRouteId,
+      p_branch_cell_keys: plan.branchCellKeys,
+    });
+    if (attributionSync.error) return attributionSync.error.message;
+  }
+
   void ctx;
   return error ? error.message : null;
 }

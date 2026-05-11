@@ -199,6 +199,12 @@ export async function handlePromoteCandidateCluster(
       .update({ status: 'ingested' })
       .in('id', uniqueSessions)
       .eq('status', 'complete');
+
+    await supabase
+      .from('session_cell_attributions')
+      .delete()
+      .eq('target_kind', 'candidate')
+      .in('session_id', uniqueSessions);
   }
 
   // ── 10. Clear promoted candidate cells ───────────────────────────────────

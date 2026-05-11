@@ -4,7 +4,9 @@ import {
   type OperatorRouteCoverage,
   type OperatorRouteDetail,
   type OperatorRouteQualityDetail,
+  type OperatorSessionCellAttribution,
   type OperatorSessionIngestion,
+  type OperatorSessionRouteAttribution,
   type RouteState,
 } from './readModels';
 import { supabase } from './supabaseClient';
@@ -55,12 +57,45 @@ type QualityDetailRow = CoverageRow & {
 type SessionIngestionRow = {
   session_id: string;
   mountain_id: string;
+  mountain_display_name: string;
   route_id: string | null;
+  started_at: string;
+  ended_at: string | null;
+  created_at: string;
+  pipeline_state: string;
   upload_state: string;
   consent_version: string | null;
   accepted_point_count: number;
   rejected_point_count: number;
   last_error: string | null;
+  matched_route_count: number;
+  matched_route_cell_count: number;
+  matched_route_point_count: number | null;
+  candidate_cell_count: number;
+  candidate_point_count: number | null;
+  attribution_precision: string;
+};
+
+type SessionRouteAttributionRow = {
+  session_id: string;
+  route_id: string;
+  route_display_name: string;
+  cell_count: number;
+  point_count: number | null;
+  transition_count: number;
+  attribution_precision: string;
+};
+
+type SessionCellAttributionRow = {
+  session_id: string;
+  target_kind: 'route' | 'candidate';
+  route_id: string | null;
+  route_display_name: string | null;
+  cell_key: string;
+  point_count: number;
+  avg_accuracy: number | null;
+  avg_altitude: number | null;
+  last_seen_at: string | null;
 };
 
 export async function fetchOperatorSummary(): Promise<OperatorOverviewMetrics | null> {
@@ -194,9 +229,10 @@ export async function fetchSessionIngestion(): Promise<OperatorSessionIngestion[
   const { data, error } = await supabase
     .from('operator_session_ingestion')
     .select(
-      'session_id, mountain_id, route_id, upload_state, consent_version, accepted_point_count, rejected_point_count, last_error',
+      'session_id, mountain_id, mountain_display_name, route_id, started_at, ended_at, created_at, pipeline_state, upload_state, consent_version, accepted_point_count, rejected_point_count, last_error, matched_route_count, matched_route_cell_count, matched_route_point_count, candidate_cell_count, candidate_point_count, attribution_precision',
     )
-    .order('session_id');
+    .order('started_at', { ascending: false })
+    .order('created_at', { ascending: false });
 
   if (error) {
     return null;
@@ -205,12 +241,79 @@ export async function fetchSessionIngestion(): Promise<OperatorSessionIngestion[
   return ((data ?? []) as SessionIngestionRow[]).map((row) => ({
     sessionId: row.session_id,
     mountainId: row.mountain_id,
+    mountainDisplayName: row.mountain_display_name,
     routeId: row.route_id,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    createdAt: row.created_at,
+    pipelineState: row.pipeline_state,
     uploadState: row.upload_state as OperatorSessionIngestion['uploadState'],
     consentVersion: row.consent_version,
     acceptedPointCount: row.accepted_point_count,
     rejectedPointCount: row.rejected_point_count,
     lastError: row.last_error,
+    matchedRouteCount: row.matched_route_count,
+    matchedRouteCellCount: row.matched_route_cell_count,
+    matchedRoutePointCount: row.matched_route_point_count,
+    candidateCellCount: row.candidate_cell_count,
+    candidatePointCount: row.candidate_point_count,
+    attributionPrecision: row.attribution_precision as OperatorSessionIngestion['attributionPrecision'],
+  }));
+}
+
+export async function fetchSessionRouteAttribution(
+  sessionId: string,
+): Promise<OperatorSessionRouteAttribution[]> {
+  if (supabase === null) return [];
+
+  const { data, error } = await supabase
+    .from('operator_session_route_attribution')
+    .select(
+      'session_id, route_id, route_display_name, cell_count, point_count, transition_count, attribution_precision',
+    )
+    .eq('session_id', sessionId)
+    .order('route_id');
+
+  if (error) throw new Error(error.message);
+
+  return ((data ?? []) as SessionRouteAttributionRow[]).map((row) => ({
+    sessionId: row.session_id,
+    routeId: row.route_id,
+    routeDisplayName: row.route_display_name,
+    cellCount: row.cell_count,
+    pointCount: row.point_count,
+    transitionCount: row.transition_count,
+    attributionPrecision: row.attribution_precision as OperatorSessionRouteAttribution['attributionPrecision'],
+  }));
+}
+
+export async function fetchSessionCellAttribution(
+  sessionId: string,
+): Promise<OperatorSessionCellAttribution[]> {
+  if (supabase === null) return [];
+
+  const { data, error } = await supabase
+    .from('operator_session_cell_attribution')
+    .select(
+      'session_id, target_kind, route_id, route_display_name, cell_key, point_count, avg_accuracy, avg_altitude, last_seen_at',
+    )
+    .eq('session_id', sessionId)
+    .order('target_kind')
+    .order('route_id')
+    .order('cell_key');
+
+  if (error) throw new Error(error.message);
+
+  return ((data ?? []) as SessionCellAttributionRow[]).map((row) => ({
+    sessionId: row.session_id,
+    targetKind: row.target_kind,
+    routeId: row.route_id,
+    routeDisplayName: row.route_display_name,
+    cellKey: row.cell_key,
+    pointCount: row.point_count,
+    avgAccuracy: row.avg_accuracy,
+    avgAltitude: row.avg_altitude,
+    lastSeenAt: row.last_seen_at,
   }));
 }
 

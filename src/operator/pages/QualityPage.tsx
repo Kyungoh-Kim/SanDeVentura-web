@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
 import { type OperatorRouteQualityDetail } from '../data/readModels';
 import {
   type EvaluateRouteSplitsResult,
@@ -27,6 +28,8 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
   const [evaluating, setEvaluating] = useState(false);
   const [evaluateResult, setEvaluateResult] = useState<EvaluateRouteSplitsResult | null>(null);
   const [evaluateError, setEvaluateError] = useState<string | null>(null);
+  const [routePage, setRoutePage] = useState(1);
+  const [auditPage, setAuditPage] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,6 +91,19 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
   const totalRejected = rows.reduce((s, r) => s + r.rejectedPointCount, 0);
 
   const selectedRow = rows.find((r) => r.routeId === selectedRouteId) ?? null;
+  const routeRows = useMemo(() => rows.filter((row) => row.routeId !== null), [rows]);
+  const routePageCount = getPageCount(routeRows.length);
+  const routePageRows = getPageItems(routeRows, Math.min(routePage, routePageCount));
+  const auditPageCount = getPageCount(auditEntries.length);
+  const auditPageRows = getPageItems(auditEntries, Math.min(auditPage, auditPageCount));
+
+  useEffect(() => {
+    if (routePage > routePageCount) setRoutePage(routePageCount);
+  }, [routePage, routePageCount]);
+
+  useEffect(() => {
+    if (auditPage > auditPageCount) setAuditPage(auditPageCount);
+  }, [auditPage, auditPageCount]);
 
   return (
     <>
@@ -172,7 +188,14 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
                 </tr>
               </thead>
               <tbody>
-                {rows.filter((row) => row.routeId !== null).map((row) => {
+                {routeRows.length === 0 && (
+                  <tr>
+                    <td colSpan={10} style={{ color: 'var(--text-3)', textAlign: 'center', padding: 16 }}>
+                      No routes found.
+                    </td>
+                  </tr>
+                )}
+                {routePageRows.map((row) => {
                   const isSelected = row.routeId === selectedRouteId;
                   return (
                     <tr
@@ -206,6 +229,11 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
                 })}
               </tbody>
             </table>
+            <Pagination
+              page={Math.min(routePage, routePageCount)}
+              totalItems={routeRows.length}
+              onPageChange={setRoutePage}
+            />
           </div>
         </div>
 
@@ -272,8 +300,9 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
             {auditEntries.length === 0 ? (
               <p style={{ fontSize: 13, color: 'var(--text-3)' }}>분할 이력 없음.</p>
             ) : (
+              <>
               <div style={{ display: 'grid', gap: 8 }}>
-                {auditEntries.slice(0, 10).map((entry) => (
+                {auditPageRows.map((entry) => (
                   <div key={entry.id} style={{ fontSize: 12, borderLeft: '3px solid var(--border)', paddingLeft: 8 }}>
                     <div style={{ fontWeight: 600, color: entry.dryRun ? 'var(--text-3)' : 'var(--text-1)' }}>
                       {entry.originalRouteId}
@@ -286,6 +315,12 @@ export function QualityPage({ selectedRouteId, onSelectRoute }: QualityPageProps
                   </div>
                 ))}
               </div>
+              <Pagination
+                page={Math.min(auditPage, auditPageCount)}
+                totalItems={auditEntries.length}
+                onPageChange={setAuditPage}
+              />
+              </>
             )}
           </div>
 

@@ -1,5 +1,16 @@
 export type RouteState = 'none' | 'reference' | 'recommended';
-export type UploadState = 'local' | 'queued' | 'uploaded' | 'retry' | 'failed';
+export type UploadState =
+  | 'local'
+  | 'queued'
+  | 'uploaded'
+  | 'retry'
+  | 'failed'
+  | 'ingesting'
+  | 'ingested'
+  | 'complete'
+  | 'rejected'
+  | 'accepted';
+export type AttributionPrecision = 'exact' | 'approximate' | 'none';
 
 export type Mountain = {
   id: string;
@@ -49,12 +60,45 @@ export type OperatorRouteQualityDetail = OperatorRouteCoverage & {
 export type OperatorSessionIngestion = {
   sessionId: string;
   mountainId: string;
+  mountainDisplayName: string;
   routeId: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  createdAt: string;
+  pipelineState: string;
   uploadState: UploadState;
   consentVersion: string | null;
   acceptedPointCount: number;
   rejectedPointCount: number;
   lastError: string | null;
+  matchedRouteCount: number;
+  matchedRouteCellCount: number;
+  matchedRoutePointCount: number | null;
+  candidateCellCount: number;
+  candidatePointCount: number | null;
+  attributionPrecision: AttributionPrecision;
+};
+
+export type OperatorSessionRouteAttribution = {
+  sessionId: string;
+  routeId: string;
+  routeDisplayName: string;
+  cellCount: number;
+  pointCount: number | null;
+  transitionCount: number;
+  attributionPrecision: AttributionPrecision;
+};
+
+export type OperatorSessionCellAttribution = {
+  sessionId: string;
+  targetKind: 'route' | 'candidate';
+  routeId: string | null;
+  routeDisplayName: string | null;
+  cellKey: string;
+  pointCount: number;
+  avgAccuracy: number | null;
+  avgAltitude: number | null;
+  lastSeenAt: string | null;
 };
 
 export type CandidateCell = {

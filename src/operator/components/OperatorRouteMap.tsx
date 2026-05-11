@@ -25,6 +25,8 @@ type OperatorRouteMapProps = {
   bbox?: [number, number, number, number] | null;
   routes?: RouteOverlay[];
   cells?: CandidateCell[];
+  title?: string;
+  allowExpand?: boolean;
 };
 
 const routeColors: Record<RouteState, string> = {
@@ -102,9 +104,18 @@ function buildCellFeatures(cells: CandidateCell[], zoom: number): Feature<Polygo
   });
 }
 
-export function OperatorRouteMap({ geometry, routeState, bbox, routes, cells }: OperatorRouteMapProps) {
+export function OperatorRouteMap({
+  geometry,
+  routeState,
+  bbox,
+  routes,
+  cells,
+  title = 'Map preview',
+  allowExpand = true,
+}: OperatorRouteMapProps) {
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const [selectedLayer, setSelectedLayer] = useState<RouteMapLayerId>('map');
+  const [expanded, setExpanded] = useState(false);
   const layerConfig = mapLayers[selectedLayer];
   const tileLayerRef = useRef<TileLayer<OSM | XYZ> | null>(null);
 
@@ -215,23 +226,70 @@ export function OperatorRouteMap({ geometry, routeState, bbox, routes, cells }: 
     );
   }
 
-  return (
+  const map = (
     <div aria-label="Operator route map" className="route-map-shell">
       <div className="route-map" ref={mapElementRef} />
-      <div aria-label="Route map layer" className="map-layer-switch" role="group">
-        {Object.entries(mapLayers).map(([id, config]) => (
-          <button
-            aria-pressed={selectedLayer === id}
-            className={selectedLayer === id ? 'active' : undefined}
-            key={id}
-            onClick={() => setSelectedLayer(id as RouteMapLayerId)}
-            type="button"
-          >
-            {config.label}
-          </button>
-        ))}
+      {allowExpand && (
+        <button
+          className="map-expand-button"
+          onClick={() => setExpanded(true)}
+          title="Open full map"
+          type="button"
+        >
+          ⛶
+        </button>
+      )}
+      <div
+        aria-label="Route map layer"
+        className="map-layer-switch"
+        role="group"
+      >
+        {Object.entries(mapLayers).map(([id, config]) => {
+          return (
+            <button
+              aria-pressed={selectedLayer === id}
+              className={selectedLayer === id ? 'active' : undefined}
+              key={id}
+              onClick={() => setSelectedLayer(id as RouteMapLayerId)}
+              type="button"
+            >
+              {config.label}
+            </button>
+          );
+        })}
       </div>
       <span className="map-attribution">{layerConfig.attribution}</span>
     </div>
+  );
+
+  return (
+    <>
+      {map}
+      {expanded && (
+        <div className="modal-backdrop" onClick={() => setExpanded(false)}>
+          <div className="modal map-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="map-modal-header">
+              <h3 className="modal-title">{title}</h3>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setExpanded(false)}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+            <OperatorRouteMap
+              allowExpand={false}
+              bbox={bbox}
+              cells={cells}
+              geometry={geometry}
+              routeState={routeState}
+              routes={routes}
+              title={title}
+            />
+          </div>
+        </div>
+      )}
+    </>
   );
 }

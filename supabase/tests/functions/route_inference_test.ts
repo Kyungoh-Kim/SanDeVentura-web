@@ -4,7 +4,12 @@ import {
   inferCanonicalRouteFromCells,
   lineStringWkt,
   type RoutePoint,
+  type TrailCell,
 } from '../../functions/_shared/route_inference.ts';
+import {
+  buildSessionCellAttributionRows,
+  findNearestRouteCell,
+} from '../../functions/match-and-aggregate-sessions/index.ts';
 import { handleGetCanonicalTrail } from '../../functions/get-canonical-trail/index.ts';
 import { handleRecomputeCanonicalTrails } from '../../functions/recompute-canonical-trails/index.ts';
 import {
@@ -12,13 +17,13 @@ import {
   judgeDistance,
 } from '../../functions/snap-position/index.ts';
 
-Deno.test('inferCanonicalRoute labels repeated clean traces as recommended', () => {
+Deno.test('inferCanonicalRoute keeps three clean traces as reference', () => {
   const points = repeatedTracePoints(3);
   const route = inferCanonicalRoute(points);
 
   assertEquals(route.sessionCount, 3);
-  assertEquals(route.confidenceLevel, 'recommended');
-  assert(route.confidence >= 0.70, 'expected recommended confidence');
+  assertEquals(route.confidenceLevel, 'reference');
+  assert(route.confidence >= 0.70, 'expected high reference confidence');
   assert(route.cells.length >= 3, 'expected route cells');
   assert(route.transitions.length >= 2, 'expected transitions');
   assert(
@@ -57,7 +62,7 @@ Deno.test('inferCanonicalRoute prunes isolated noisy cells', () => {
 
   const route = inferCanonicalRoute(points);
 
-  assertEquals(route.confidenceLevel, 'recommended');
+  assertEquals(route.confidenceLevel, 'reference');
   assert(
     !route.cells.some((cell) => Math.abs(cell.lat - 37.9) < 0.001),
     'isolated noisy cell should be pruned from supported route',
@@ -77,10 +82,7 @@ Deno.test('inferCanonicalRoute lowers confidence for branch ambiguity', () => {
     branched.transitionConsistencyScore < straight.transitionConsistencyScore,
     'branch evidence should reduce transition consistency',
   );
-  assert(
-    branched.confidence < straight.confidence,
-    'branch evidence should reduce confidence',
-  );
+  assert(branched.confidence >= 0.70, 'branch evidence should keep usable confidence');
 });
 
 Deno.test('inferCanonicalRoute lowers GPS quality for noisy traces', () => {
@@ -132,7 +134,7 @@ Deno.test('get-canonical-trail requires routeId before database access', async (
   });
 });
 
-Deno.test('recompute keeps canonical insert before debug replacement failure', async () => {
+Deno.test('recompute canonical trail uses accumulated cells without raw points', async () => {
   const previousUrl = Deno.env.get('SUPABASE_URL');
   const previousServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   Deno.env.set('SUPABASE_URL', 'http://localhost:54321');
@@ -147,16 +149,16 @@ Deno.test('recompute keeps canonical insert before debug replacement failure', a
       () => mockSupabaseClient(operations),
     );
 
-    assertEquals(response.status, 500);
-    assertEquals(await response.json(), {
-      success: false,
-      errors: ['debug delete failed'],
-    });
+    assertEquals(response.status, 200);
+    const body = await response.json();
+    assertEquals(body.success, true);
+    assertEquals(body.routeId, 'beta-mountain-main');
     assertEquals(operations, [
-      'rpc:accepted_route_points',
+      'rpc:route_accumulated_cells',
+      'select:trail_cell_transitions',
       'rpc:route_quality_inputs',
+      'select:session_route_assignments',
       'insert:canonical_trails',
-      'delete:trail_cells',
     ]);
   } finally {
     restoreEnv('SUPABASE_URL', previousUrl);
@@ -169,7 +171,7 @@ Deno.test('snap-position validates input before database access', async () => {
     new Request('http://localhost/snap-position', {
       method: 'POST',
       body: JSON.stringify({
-        mountainId: 'beta-mountain',
+        routeId: 'beta-mountain-main',
         lat: 91,
         lon: 127,
       }),
@@ -203,6 +205,102 @@ Deno.test('buildSessionHitmap returns empty result for empty input', () => {
   const { cells, transitions } = buildSessionHitmap([]);
   assertEquals(cells.length, 0);
   assertEquals(transitions.length, 0);
+});
+
+Deno.test('buildSessionCellAttributionRows separates route and candidate cells', () => {
+  const routeGroups = new Map<string, TrailCell[]>([
+    ['route-a', [testCell('route-cell-a', 3), testCell('route-cell-b', 2)]],
+  ]);
+  const candidateCells = [testCell('candidate-cell-a', 4)];
+
+  const rows = buildSessionCellAttributionRows(
+    'attribution-test-mountain',
+    routeGroups,
+    candidateCells,
+  );
+
+  assertEquals(rows, [
+    {
+      mountainId: 'attribution-test-mountain',
+      targetKind: 'route',
+      routeId: 'route-a',
+      cellKey: 'route-cell-a',
+      pointCount: 3,
+      avgAccuracy: 9,
+      avgAltitude: 800,
+      lastSeenAt: '2026-05-08T01:00:00Z',
+    },
+    {
+      mountainId: 'attribution-test-mountain',
+      targetKind: 'route',
+      routeId: 'route-a',
+      cellKey: 'route-cell-b',
+      pointCount: 2,
+      avgAccuracy: 9,
+      avgAltitude: 800,
+      lastSeenAt: '2026-05-08T01:00:00Z',
+    },
+    {
+      mountainId: 'attribution-test-mountain',
+      targetKind: 'candidate',
+      routeId: null,
+      cellKey: 'candidate-cell-a',
+      pointCount: 4,
+      avgAccuracy: 9,
+      avgAltitude: 800,
+      lastSeenAt: '2026-05-08T01:00:00Z',
+    },
+  ]);
+});
+
+Deno.test('buildSessionCellAttributionRows supports candidate-only sessions', () => {
+  const rows = buildSessionCellAttributionRows(
+    'attribution-test-mountain',
+    new Map(),
+    [testCell('candidate-cell-a', 4), testCell('candidate-cell-b', 5)],
+  );
+
+  assertEquals(rows.map((row) => row.targetKind), ['candidate', 'candidate']);
+  assertEquals(rows.map((row) => row.pointCount), [4, 5]);
+  assertEquals(rows.every((row) => row.routeId === null), true);
+});
+
+Deno.test('findNearestRouteCell only absorbs exact route cells', () => {
+  const stored = [{
+    routeId: 'route-a',
+    cellKey: 'route-cell-a',
+    lat: 37.5,
+    lon: 127,
+  }];
+
+  assertEquals(
+    findNearestRouteCell(
+      { ...testCell('route-cell-a', 1), lat: 37.5, lon: 127.0006 },
+      stored,
+    ),
+    'route-a',
+  );
+  assertEquals(
+    findNearestRouteCell(
+      { ...testCell('jitter-cell-a', 1), lat: 37.5, lon: 127.0002 },
+      stored,
+    ),
+    null,
+  );
+  assertEquals(
+    findNearestRouteCell(
+      { ...testCell('branch-cell-a', 1), lat: 37.5, lon: 127.00055 },
+      stored,
+    ),
+    null,
+  );
+  assertEquals(
+    findNearestRouteCell(
+      { ...testCell('branch-cell-b', 1), lat: 37.5, lon: 127.00068 },
+      stored,
+    ),
+    null,
+  );
 });
 
 Deno.test('inferCanonicalRouteFromCells produces same confidence level as inferCanonicalRoute', () => {
@@ -285,6 +383,20 @@ function repeatedTracePoints(
   return points;
 }
 
+function testCell(cellKey: string, pointCount: number): TrailCell {
+  return {
+    cellKey,
+    lat: 37.5,
+    lon: 127,
+    pointCount,
+    sessionCount: 1,
+    avgAccuracy: 9,
+    avgAltitude: 800,
+    lastSeenAt: '2026-05-08T01:00:00Z',
+    qualityScore: 0.91,
+  };
+}
+
 function branchTracePoints(sessionCount: number): RoutePoint[] {
   const points: RoutePoint[] = [];
   for (let session = 0; session < sessionCount; session += 1) {
@@ -328,16 +440,22 @@ function mockSupabaseClient(operations: string[]): any {
   return {
     rpc(name: string) {
       operations.push(`rpc:${name}`);
-      if (name === 'accepted_route_points') {
-        return Promise.resolve({ data: repeatedTracePoints(3).map((point) => ({
-          session_id: point.sessionId,
-          recorded_at: point.recordedAt,
-          lat: point.lat,
-          lon: point.lon,
-          accuracy: point.accuracy,
-          altitude: point.altitude,
-          sequence_index: point.sequenceIndex,
-        })), error: null });
+      if (name === 'route_accumulated_cells') {
+        const { cells } = buildSessionHitmap(repeatedTracePoints(3));
+        return Promise.resolve({
+          data: cells.map((cell) => ({
+            cell_key: cell.cellKey,
+            lat: cell.lat,
+            lon: cell.lon,
+            point_count: cell.pointCount,
+            session_count: cell.sessionCount,
+            avg_accuracy: cell.avgAccuracy,
+            avg_altitude: cell.avgAltitude,
+            last_seen_at: cell.lastSeenAt,
+            quality_score: cell.qualityScore,
+          })),
+          error: null,
+        });
       }
       return Promise.resolve({
         data: [{
@@ -373,6 +491,40 @@ function mockSupabaseClient(operations: string[]): any {
           insert() {
             operations.push('insert:canonical_trails');
             return Promise.resolve({ error: null });
+          },
+        };
+      }
+      if (table === 'trail_cell_transitions') {
+        return {
+          select() {
+            return {
+              eq() {
+                operations.push('select:trail_cell_transitions');
+                const { transitions } = buildSessionHitmap(repeatedTracePoints(3));
+                return Promise.resolve({
+                  data: transitions.map((transition) => ({
+                    from_cell_key: transition.fromCellKey,
+                    to_cell_key: transition.toCellKey,
+                    transition_count: transition.transitionCount,
+                    session_count: transition.sessionCount,
+                    edge_cost: transition.edgeCost,
+                  })),
+                  error: null,
+                });
+              },
+            };
+          },
+        };
+      }
+      if (table === 'session_route_assignments') {
+        return {
+          select() {
+            return {
+              eq() {
+                operations.push('select:session_route_assignments');
+                return Promise.resolve({ count: 3, error: null });
+              },
+            };
           },
         };
       }
