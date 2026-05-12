@@ -491,22 +491,22 @@ export function splitSessionByRouteFit(
   routeDistanceMeters = 45,
 ): RouteFitSplit {
   const routeKeys = new Set(routePath.map((cell) => cell.cellKey));
-  const routeCells: TrailCell[] = [];
-  const candidateCells: TrailCell[] = [];
+  const routeCells = new Map<string, TrailCell>();
+  const candidateCells = new Map<string, TrailCell>();
 
   for (const cell of sessionPath) {
     if (routeKeys.has(cell.cellKey)) {
-      routeCells.push(cell);
+      routeCells.set(cell.cellKey, cell);
       continue;
     }
     if (pathMatchAccepted && nearestDistanceMeters(cell, routePath) <= routeDistanceMeters) {
-      routeCells.push(cell);
+      routeCells.set(cell.cellKey, cell);
       continue;
     }
-    candidateCells.push(cell);
+    candidateCells.set(cell.cellKey, cell);
   }
 
-  return { routeCells, candidateCells };
+  return { routeCells: [...routeCells.values()], candidateCells: [...candidateCells.values()] };
 }
 
 export function smoothCanonicalLine(
