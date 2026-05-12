@@ -9,12 +9,16 @@ import {
   inferCanonicalRoute,
   inferCanonicalRouteFromCells,
   lineStringWkt,
+  mergeTrajectoryLines,
   pointToCellKey,
+  refineSessionTrajectory,
   smoothCanonicalLine,
   splitSessionByRouteFit,
+  trajectoryLineWkt,
   type RoutePoint,
   type TrailCell,
   weightedDiscreteFrechet,
+  weightedDiscreteFrechetTrajectory,
 } from '../../functions/_shared/route_inference.ts';
 import {
   buildSessionCellAttributionRows,
@@ -215,6 +219,46 @@ Deno.test('buildSessionHitmap returns empty result for empty input', () => {
   const { cells, transitions } = buildSessionHitmap([]);
   assertEquals(cells.length, 0);
   assertEquals(transitions.length, 0);
+});
+
+Deno.test('refineSessionTrajectory resamples raw points and emits LineString', () => {
+  const points = trajectoryPoints([
+    [37.6500, 127.0000, 8],
+    [37.6505, 127.0005, 9],
+    [37.6510, 127.0010, 180],
+    [37.6515, 127.0015, 10],
+    [37.6520, 127.0020, 11],
+  ]);
+
+  const trajectory = refineSessionTrajectory(points);
+
+  assert(trajectory.points.length >= 2, 'expected refined trajectory points');
+  assertEquals(trajectory.pointCount, 5);
+  assert(
+    trajectoryLineWkt(trajectory.points)?.startsWith('LINESTRING('),
+    'expected trajectory LineString WKT',
+  );
+});
+
+Deno.test('mergeTrajectoryLines handles different sample counts', () => {
+  const shortLine = [
+    { lat: 37.6500, lon: 127.0000 },
+    { lat: 37.6510, lon: 127.0010 },
+  ];
+  const longLine = [
+    { lat: 37.6501, lon: 127.0001 },
+    { lat: 37.6504, lon: 127.0004 },
+    { lat: 37.6507, lon: 127.0007 },
+    { lat: 37.6511, lon: 127.0011 },
+  ];
+
+  const merged = mergeTrajectoryLines(shortLine, longLine, 2, 1);
+
+  assert(merged.length >= 2, 'expected merged trajectory points');
+  assert(
+    Number.isFinite(weightedDiscreteFrechetTrajectory(merged, longLine).frechetDistance),
+    'expected finite trajectory match score',
+  );
 });
 
 Deno.test('buildSessionCellAttributionRows separates route and candidate cells', () => {
@@ -489,6 +533,18 @@ function repeatedTracePoints(
     }
   }
   return points;
+}
+
+function trajectoryPoints(points: Array<[number, number, number]>): RoutePoint[] {
+  return points.map(([lat, lon, accuracy], index) => ({
+    sessionId: 'trajectory-test',
+    recordedAt: new Date(Date.UTC(2026, 4, 8, 1, 0, index)).toISOString(),
+    lat,
+    lon,
+    accuracy,
+    altitude: 300 + index,
+    sequenceIndex: index,
+  }));
 }
 
 function testCell(cellKey: string, pointCount: number): TrailCell {

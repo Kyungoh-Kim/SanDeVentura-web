@@ -5,14 +5,13 @@ import {
   type CandidateCluster,
   type EvaluateRouteSplitsResult,
   type PromoteCandidateClusterResult,
-  fetchCandidateCells,
   fetchCandidateClusters,
-  fetchTrailCells,
+  fetchCandidateTrajectories,
   promoteCandidateCluster,
   triggerEvaluateRouteSplits,
   triggerMatchAndAggregate,
 } from '../data/operationsRepository';
-import { type CandidateCell, type OperatorRouteDetail } from '../data/readModels';
+import { type CandidateTrajectory, type OperatorRouteDetail } from '../data/readModels';
 import { fetchMountainRouteDetails } from '../data/routesRepository';
 
 const OperatorRouteMap = lazy(() =>
@@ -45,7 +44,7 @@ export function DiscoveryPage() {
   const [routeName, setRouteName] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [selectedMountainId, setSelectedMountainId] = useState<string | null>(null);
-  const [selectedCells, setSelectedCells] = useState<CandidateCell[]>([]);
+  const [selectedTrajectories, setSelectedTrajectories] = useState<CandidateTrajectory[]>([]);
   const [selectedRoutes, setSelectedRoutes] = useState<OperatorRouteDetail[]>([]);
   const [page, setPage] = useState(1);
 
@@ -60,23 +59,22 @@ export function DiscoveryPage() {
 
   useEffect(() => {
     if (selectedMountainId === null) {
-      setSelectedCells([]);
+      setSelectedTrajectories([]);
       setSelectedRoutes([]);
       return;
     }
     let cancelled = false;
     Promise.all([
-      fetchCandidateCells(selectedMountainId),
-      fetchTrailCells(selectedMountainId),
+      fetchCandidateTrajectories(selectedMountainId),
       fetchMountainRouteDetails(selectedMountainId),
-    ]).then(([candidateCells, trailCells, routes]) => {
+    ]).then(([candidateTrajectories, routes]) => {
       if (!cancelled) {
-        setSelectedCells([...trailCells, ...candidateCells]);
+        setSelectedTrajectories(candidateTrajectories);
         setSelectedRoutes(routes);
       }
     }).catch(() => {
       if (!cancelled) {
-        setSelectedCells([]);
+        setSelectedTrajectories([]);
         setSelectedRoutes([]);
       }
     });
@@ -91,10 +89,15 @@ export function DiscoveryPage() {
   }, [modalMountainId]);
 
   const mapRoutes = useMemo(
-    () => selectedRoutes
+    () => [
+      ...selectedRoutes
       .filter((r) => r.trailGeoJson !== null)
       .map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState })),
-    [selectedRoutes],
+      ...selectedTrajectories
+        .filter((trajectory) => trajectory.trailGeoJson !== null)
+        .map((trajectory) => ({ geometry: trajectory.trailGeoJson!, routeState: 'none' as const })),
+    ],
+    [selectedRoutes, selectedTrajectories],
   );
   const pageCount = getPageCount(clusters.length);
   const pageClusters = getPageItems(clusters, Math.min(page, pageCount));
@@ -191,8 +194,7 @@ export function DiscoveryPage() {
         <div className="notice success">
           <strong>Route created: {promote.result.routeId}</strong>
           <span>
-            {promote.result.cellCount} cells &middot;{' '}
-            {promote.result.transitionCount} transitions &middot;{' '}
+            {promote.result.sessionCount} supporting sessions &middot;{' '}
             confidence {(promote.result.confidence * 100).toFixed(0)}%
             ({promote.result.confidenceLevel})
             {promote.result.sessionsReset > 0
@@ -220,14 +222,14 @@ export function DiscoveryPage() {
               <div className="table-panel-header">
                 <span className="table-panel-title">Candidate clusters</span>
                 <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                  {clusters.length} mountain{clusters.length !== 1 ? 's' : ''} with unmatched GPS data
+                  {clusters.length} mountain{clusters.length !== 1 ? 's' : ''} with unmatched trajectory data
                 </span>
               </div>
               <table>
                 <thead>
                   <tr>
                     <th>Mountain</th>
-                    <th>Cells</th>
+                    <th>Trajectories</th>
                     <th>Session contributions</th>
                     <th>Last evidence</th>
                     <th></th>
@@ -279,7 +281,6 @@ export function DiscoveryPage() {
                   geometry={null}
                   routeState="none"
                   routes={mapRoutes}
-                  cells={selectedCells}
                 />
               </Suspense>
             ) : (
@@ -293,9 +294,9 @@ export function DiscoveryPage() {
           <div className="card">
             <div className="card-title">About candidate clusters</div>
             <ul className="bullet-list">
-              <li>H3 cells with GPS data not yet matched to a route</li>
-              <li>Orange intensity = session count contribution</li>
-              <li>Promote to create a new route from the cluster</li>
+              <li>Unmatched session trajectories are clustered without H3 cells</li>
+              <li>Gray lines show representative candidate geometry</li>
+              <li>Promote to create a new route from a trajectory cluster</li>
             </ul>
           </div>
         </div>

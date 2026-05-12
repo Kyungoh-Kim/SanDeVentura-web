@@ -1,4 +1,4 @@
-import { type CandidateCell } from './readModels';
+import { type CandidateCell, type CandidateTrajectory, type GeoJsonLineString } from './readModels';
 import { supabase } from './supabaseClient';
 
 export type MatchAndAggregateResult = {
@@ -23,6 +23,8 @@ export type CandidateCluster = {
   cellCount: number;
   totalSessionContributions: number;
   latestEvidenceAt: string | null;
+  trajectoryCount?: number;
+  totalPointCount?: number;
 };
 
 
@@ -56,14 +58,35 @@ export async function triggerMatchAndAggregate(): Promise<MatchAndAggregateResul
 export async function fetchCandidateClusters(): Promise<CandidateCluster[]> {
   if (!supabase) return [];
   const { data, error } = await supabase
-    .from('candidate_cell_clusters')
-    .select('mountain_id, cell_count, total_session_contributions, latest_evidence_at');
+    .from('operator_candidate_trajectory_clusters')
+    .select('mountain_id, trajectory_count, total_point_count, total_session_contributions, latest_evidence_at');
   if (error || !data) return [];
   return (data as any[]).map((row) => ({
     mountainId: row.mountain_id,
-    cellCount: row.cell_count,
+    cellCount: row.trajectory_count,
+    trajectoryCount: row.trajectory_count,
+    totalPointCount: row.total_point_count,
     totalSessionContributions: row.total_session_contributions,
     latestEvidenceAt: row.latest_evidence_at,
+  }));
+}
+
+export async function fetchCandidateTrajectories(mountainId: string): Promise<CandidateTrajectory[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase.rpc('candidate_trajectories_for_mountain', {
+    p_mountain_id: mountainId,
+  });
+  if (error || !data) return [];
+  return (data as any[]).map((row) => ({
+    id: row.id,
+    mountainId: row.mountain_id,
+    trailGeoJson: parseLineString(row.trail_geojson),
+    pointCount: row.point_count,
+    sessionCount: row.session_count,
+    lengthMeters: row.length_m,
+    confidence: row.confidence,
+    latestEvidenceAt: row.latest_evidence_at,
+    algorithmVersion: row.algorithm_version,
   }));
 }
 
@@ -213,4 +236,19 @@ export async function promoteCandidateCluster(
     sessionCount: data.sessionCount ?? 0,
     sessionsReset: data.sessionsReset ?? 0,
   };
+}
+
+function parseLineString(value: unknown): GeoJsonLineString | null {
+  if (!value || typeof value !== 'object' || !('coordinates' in value)) return null;
+  const coordinates = (value as { coordinates?: unknown }).coordinates;
+  if (!Array.isArray(coordinates)) return null;
+  const parsed: Array<[number, number]> = [];
+  for (const coordinate of coordinates) {
+    if (!Array.isArray(coordinate) || coordinate.length < 2) return null;
+    const lon = Number(coordinate[0]);
+    const lat = Number(coordinate[1]);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+    parsed.push([lon, lat]);
+  }
+  return parsed.length >= 2 ? { type: 'LineString', coordinates: parsed } : null;
 }

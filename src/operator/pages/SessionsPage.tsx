@@ -1,32 +1,27 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { cellToLatLng } from 'h3-js';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
-  type CandidateCell,
   type OperatorSessionCellAttribution,
   type OperatorSessionIngestion,
   type OperatorSessionRouteAttribution,
+  type OperatorSessionTrajectoryAttribution,
 } from '../data/readModels';
 import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
 import {
   fetchSessionCellAttribution,
   fetchSessionIngestion,
   fetchSessionRouteAttribution,
+  fetchSessionTrajectoryAttribution,
 } from '../data/routesRepository';
-
-const OperatorRouteMap = lazy(() =>
-  import('../components/OperatorRouteMap').then((module) => ({
-    default: module.OperatorRouteMap,
-  })),
-);
 
 type DetailState = {
   routes: OperatorSessionRouteAttribution[];
   cells: OperatorSessionCellAttribution[];
+  trajectories: OperatorSessionTrajectoryAttribution[];
   status: 'idle' | 'loading' | 'ready' | 'error';
 };
 
-const emptyDetail: DetailState = { routes: [], cells: [], status: 'idle' };
+const emptyDetail: DetailState = { routes: [], cells: [], trajectories: [], status: 'idle' };
 
 export function SessionsPage() {
   const [rows, setRows] = useState<OperatorSessionIngestion[] | null>(null);
@@ -51,19 +46,20 @@ export function SessionsPage() {
     }
 
     let active = true;
-    setDetail({ routes: [], cells: [], status: 'loading' });
+    setDetail({ routes: [], trajectories: [], cells: [], status: 'loading' });
 
     Promise.all([
       fetchSessionRouteAttribution(selected.sessionId),
+      fetchSessionTrajectoryAttribution(selected.sessionId),
       selected.attributionPrecision === 'exact'
         ? fetchSessionCellAttribution(selected.sessionId)
         : Promise.resolve([]),
     ])
-      .then(([routes, cells]) => {
-        if (active) setDetail({ routes, cells, status: 'ready' });
+      .then(([routes, trajectories, cells]) => {
+        if (active) setDetail({ routes, trajectories, cells, status: 'ready' });
       })
       .catch(() => {
-        if (active) setDetail({ routes: [], cells: [], status: 'error' });
+        if (active) setDetail({ routes: [], trajectories: [], cells: [], status: 'error' });
       });
 
     return () => {
@@ -121,10 +117,8 @@ export function SessionsPage() {
   const unavailable = rows === null;
   const candidateCells = detail.cells.filter((cell) => cell.targetKind === 'candidate');
   const routeCells = detail.cells.filter((cell) => cell.targetKind === 'route');
-  const sessionMapCells = useMemo(
-    () => detail.cells.map(sessionCellToMapCell).filter((cell): cell is CandidateCell => cell !== null),
-    [detail.cells],
-  );
+  const candidateTrajectories = detail.trajectories.filter((row) => row.targetKind === 'candidate');
+  const routeTrajectories = detail.trajectories.filter((row) => row.targetKind === 'route');
 
   return (
     <>
@@ -139,8 +133,8 @@ export function SessionsPage() {
         <StatCard label="Total sessions" value={unavailable ? '-' : stats.total} />
         <StatCard label="Ingested" value={unavailable ? '-' : stats.ingested} tone="good" />
         <StatCard label="Exact attribution" value={unavailable ? '-' : stats.exact} />
-        <StatCard label="Route cells" value={unavailable ? '-' : stats.routeCells} />
-        <StatCard label="Candidate cells" value={unavailable ? '-' : stats.candidateCells} tone="warn" />
+        <StatCard label="Route segments" value={unavailable ? '-' : stats.routeCells} />
+        <StatCard label="Candidate trajectories" value={unavailable ? '-' : stats.candidateCells} tone="warn" />
       </div>
 
       <div className="sessions-layout">
@@ -192,8 +186,8 @@ export function SessionsPage() {
                     <th>Mountain</th>
                     <th>State</th>
                     <th>Precision</th>
-                    <th>Route cells</th>
-                    <th>Candidate cells</th>
+                    <th>Route support</th>
+                    <th>Candidate support</th>
                     <th>Accepted</th>
                     <th>Rejected</th>
                   </tr>
@@ -256,22 +250,13 @@ export function SessionsPage() {
               </div>
 
               <div className="card">
-                <div className="card-title">Session H3 cells</div>
+                <div className="card-title">Session trajectory attribution</div>
                 {detail.status === 'loading' ? (
-                  <EmptyNote>Loading session cells.</EmptyNote>
-                ) : selected.attributionPrecision !== 'exact' ? (
-                  <EmptyNote>Cell map is not available for historical aggregate sessions.</EmptyNote>
-                ) : sessionMapCells.length === 0 ? (
-                  <EmptyNote>No H3 cells available for this session.</EmptyNote>
+                  <EmptyNote>Loading session trajectory attribution.</EmptyNote>
+                ) : detail.trajectories.length === 0 ? (
+                  <EmptyNote>No trajectory attribution is available for this session.</EmptyNote>
                 ) : (
-                  <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing session cells.</span></div>}>
-                    <OperatorRouteMap
-                      title={`Session cells - ${selected.sessionId}`}
-                      geometry={null}
-                      routeState="none"
-                      cells={sessionMapCells}
-                    />
-                  </Suspense>
+                  <TrajectoryList rows={detail.trajectories} />
                 )}
               </div>
 
@@ -304,26 +289,30 @@ export function SessionsPage() {
 
               <div className="card">
                 <div className="card-title">Candidate evidence</div>
-                <ScoreRow label="Candidate cells" value={selected.candidateCellCount.toLocaleString()} />
+                <ScoreRow label="Candidate trajectories" value={selected.candidateCellCount.toLocaleString()} />
                 <ScoreRow
                   label="Candidate points"
                   value={selected.candidatePointCount === null ? 'Historical aggregate only' : selected.candidatePointCount.toLocaleString()}
                 />
                 {selected.attributionPrecision !== 'exact' ? (
                   <EmptyNote>Cell details are not available for historical aggregate sessions.</EmptyNote>
+                ) : candidateTrajectories.length > 0 ? (
+                  <TrajectoryList rows={candidateTrajectories} />
                 ) : candidateCells.length === 0 ? (
-                  <EmptyNote>No candidate cells for this session.</EmptyNote>
+                  <EmptyNote>No candidate evidence for this session.</EmptyNote>
                 ) : (
                   <CellList cells={candidateCells} />
                 )}
               </div>
 
               <div className="card">
-                <div className="card-title">Exact cell keys</div>
+                <div className="card-title">Route evidence</div>
                 {selected.attributionPrecision !== 'exact' ? (
                   <EmptyNote>Cell details are not available for historical aggregate sessions.</EmptyNote>
+                ) : routeTrajectories.length > 0 ? (
+                  <TrajectoryList rows={routeTrajectories} />
                 ) : routeCells.length === 0 ? (
-                  <EmptyNote>No route cell details for this session.</EmptyNote>
+                  <EmptyNote>No route evidence details for this session.</EmptyNote>
                 ) : (
                   <CellList cells={routeCells} />
                 )}
@@ -333,7 +322,7 @@ export function SessionsPage() {
             <div className="card">
               <div className="card-title">Session detail</div>
               <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
-                Click a row to inspect route and candidate cell attribution.
+                Click a row to inspect route and candidate trajectory attribution.
               </p>
             </div>
           )}
@@ -342,7 +331,7 @@ export function SessionsPage() {
             <div className="card-title">Privacy boundary</div>
             <div className="check-item"><span className="check-dot">OK</span>Raw traces protected</div>
             <div className="check-item"><span className="check-dot">OK</span>No coordinates in session detail</div>
-            <div className="check-item"><span className="check-dot">OK</span>Cell keys only for diagnostics</div>
+            <div className="check-item"><span className="check-dot">OK</span>Aggregate trajectory support only</div>
           </div>
         </div>
       </div>
@@ -412,6 +401,26 @@ function CellList({ cells }: { cells: OperatorSessionCellAttribution[] }) {
   );
 }
 
+function TrajectoryList({ rows }: { rows: OperatorSessionTrajectoryAttribution[] }) {
+  return (
+    <div className="detail-list">
+      {rows.map((row) => (
+        <div className="detail-item" key={`${row.targetKind}-${row.routeId ?? row.candidateTrajectoryId}`}>
+          <div>
+            <strong>{row.targetKind === 'route' ? row.routeDisplayName ?? row.routeId : 'Candidate trajectory'}</strong>
+            <span>{row.algorithmVersion}</span>
+            <span>{formatTrajectoryDiagnostics(row)}</span>
+          </div>
+          <div className="detail-metrics">
+            <b>{row.pointCount.toLocaleString()}</b> points
+            <b>{formatMeters(row.matchedLengthMeters ?? row.residualLengthMeters)}</b>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function formatCellsAndPoints(cells: number, points: number | null): string {
   return points === null
     ? `${cells.toLocaleString()} / -`
@@ -432,22 +441,21 @@ function formatRouteMatchDiagnostics(route: OperatorSessionRouteAttribution): st
   return parts.join(' / ');
 }
 
-function sessionCellToMapCell(cell: OperatorSessionCellAttribution): CandidateCell | null {
-  try {
-    const [lat, lon] = cellToLatLng(cell.cellKey);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-    return {
-      cellKey: cell.cellKey,
-      lat,
-      lon,
-      pointCount: cell.pointCount,
-      sessionCount: Math.max(1, cell.pointCount),
-    };
-  } catch {
-    return null;
-  }
-}
-
 function shortId(value: string): string {
   return value.length > 13 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
+}
+
+function formatTrajectoryDiagnostics(row: OperatorSessionTrajectoryAttribution): string {
+  const parts: string[] = [row.targetKind];
+  if (row.frechetDistance !== null) {
+    parts.push(`${Math.round(row.frechetDistance)}m Frechet`);
+  }
+  if (row.overlapRatio !== null) {
+    parts.push(`${Math.round(row.overlapRatio * 100)}% overlap`);
+  }
+  return parts.join(' / ');
+}
+
+function formatMeters(value: number | null): string {
+  return value === null ? '-' : `${Math.round(value).toLocaleString()}m`;
 }

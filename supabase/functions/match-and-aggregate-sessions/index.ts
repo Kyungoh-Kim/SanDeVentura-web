@@ -2,14 +2,21 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 
 import { jsonResponse } from '../_shared/response.ts';
 import {
-  buildSessionHitmap,
   inferCanonicalRouteFromCells,
   lineStringWkt,
+  mergeTrajectoryLines,
+  refineSessionTrajectory,
   splitSessionByRouteFit,
+  trajectoryLengthMeters,
+  trajectoryLineWkt,
+  trajectoryOverlapRatio,
   weightedDiscreteFrechet,
-  type RouteMatchMetrics,
-  type RoutePoint,
+  weightedDiscreteFrechetTrajectory,
+  type RefinedTrajectory,
   type RouteQualityInputs,
+  type TrajectoryMatchMetrics,
+  type TrajectoryPoint,
+  type RoutePoint,
   type TrailCell,
   type TrailTransition,
 } from '../_shared/route_inference.ts';
@@ -18,6 +25,8 @@ const batchSize = 50;
 const routeFrechetThresholdMeters = 45;
 const routeOverlapThreshold = 0.35;
 const routeScoreMarginThresholdMeters = 15;
+const candidateFrechetThresholdMeters = 65;
+const algorithmVersion = 'trajectory-v1';
 
 type SupabaseClient = any;
 
@@ -32,14 +41,29 @@ export type SessionCellAttributionRow = {
   lastSeenAt: string | null;
 };
 
-type RouteMatchMethod = 'exact_overlap' | 'frechet_match' | 'candidate_residual';
+type RouteMatchMethod = 'exact_overlap' | 'frechet_match' | 'candidate_residual' | 'trajectory_match';
 
 type RouteMatchDecision = {
   routeId: string | null;
   accepted: boolean;
   method: RouteMatchMethod;
-  metrics: RouteMatchMetrics | null;
+  metrics: TrajectoryMatchMetrics | null;
   scoreMargin: number | null;
+};
+
+export type SessionTrajectoryAttributionRow = {
+  mountainId: string;
+  targetKind: 'route' | 'candidate';
+  routeId: string | null;
+  candidateTrajectoryId: string | null;
+  pointCount: number;
+  avgAccuracy: number | null;
+  avgAltitude: number | null;
+  matchedLengthMeters: number | null;
+  residualLengthMeters: number | null;
+  frechetDistance: number | null;
+  overlapRatio: number | null;
+  algorithmVersion: string;
 };
 
 export async function handleMatchAndAggregateSessions(
@@ -59,7 +83,7 @@ export async function handleMatchAndAggregateSessions(
 
   const { data: sessions, error: sessionsError } = await supabase
     .from('unprocessed_ingested_sessions')
-    .select('id, mountain_id, accepted_point_count')
+    .select('id, mountain_id, route_id, accepted_point_count')
     .limit(batchSize);
 
   if (sessionsError) {
@@ -85,7 +109,7 @@ export async function handleMatchAndAggregateSessions(
   let purgedRejectedPointCount = 0;
 
   for (const session of sessions) {
-    const result = await processSession(supabase, session.id, session.mountain_id);
+    const result = await processSession(supabase, session.id, session.mountain_id, session.route_id ?? null);
     if (result.error) {
       console.error(`Session ${session.id} failed: ${result.error}`);
       continue;
@@ -99,12 +123,8 @@ export async function handleMatchAndAggregateSessions(
     processedCount += 1;
   }
 
-  for (const routeId of affectedRouteIds) {
-    await recomputeRouteConfidence(supabase, routeId);
-  }
-
   const { data: clusters } = await supabase
-    .from('candidate_cell_clusters')
+    .from('operator_candidate_trajectory_clusters')
     .select('mountain_id');
 
   return jsonResponse({
@@ -124,6 +144,7 @@ async function processSession(
   supabase: SupabaseClient,
   sessionId: string,
   mountainId: string,
+  seedRouteId: string | null,
 ): Promise<{
   affectedRouteIds: string[];
   orphanCellsAdded: number;
@@ -146,8 +167,8 @@ async function processSession(
     };
   }
 
-  const { cells, transitions, path } = buildSessionHitmap(points);
-  if (cells.length === 0) {
+  const trajectory = refineSessionTrajectory(points);
+  if (trajectory.points.length < 2) {
     await markSessionProcessed(supabase, sessionId);
     const purgeResult = await purgeSessionRawPoints(supabase, sessionId);
     if (purgeResult.error) {
@@ -161,133 +182,71 @@ async function processSession(
     };
   }
 
-  const [storedCells, routePaths, bootstrapInfo] = await Promise.all([
-    fetchMountainRouteCells(supabase, mountainId),
-    fetchMountainRoutePaths(supabase, mountainId),
-    findBootstrapRoute(supabase, mountainId),
-  ]);
-
-  const routeGroups = new Map<string, TrailCell[]>();
-  const orphanCells: TrailCell[] = [];
+  const routePaths = await fetchMountainRouteTrajectories(supabase, mountainId);
+  const trajectoryRows: SessionTrajectoryAttributionRow[] = [];
   let orphanCellsAdded = 0;
-  const matchDiagnostics = new Map<string, RouteMatchDecision>();
 
-  if (bootstrapInfo !== null) {
-    for (const cell of cells) {
-      if (isWithinBbox(cell, bootstrapInfo.bbox)) {
-        const group = routeGroups.get(bootstrapInfo.routeId) ?? [];
-        group.push(cell);
-        routeGroups.set(bootstrapInfo.routeId, group);
-      } else {
-        orphanCells.push(cell);
-      }
-    }
-    matchDiagnostics.set(bootstrapInfo.routeId, {
-      routeId: bootstrapInfo.routeId,
-      accepted: true,
-      method: 'exact_overlap',
-      metrics: null,
-      scoreMargin: null,
-    });
-  } else {
-    const decision = chooseRouteForSessionPath(path, routePaths);
-    const bestRoutePath = decision.routeId === null
-      ? null
-      : routePaths.find((routePath) => routePath.routeId === decision.routeId) ?? null;
+  const decision = seedRouteId !== null
+    ? supervisedRouteDecision(seedRouteId, routePaths, trajectory)
+    : chooseRouteForTrajectory(trajectory.points, routePaths);
 
-    if (bestRoutePath !== null) {
-      const split = splitSessionByRouteFit(
-        path,
-        bestRoutePath.path,
-        decision.accepted,
-        routeFrechetThresholdMeters,
-      );
-      if (split.routeCells.length > 0) {
-        routeGroups.set(bestRoutePath.routeId, split.routeCells);
-        matchDiagnostics.set(bestRoutePath.routeId, decision);
-      }
-      orphanCells.push(...split.candidateCells);
-    } else {
-      for (const cell of cells) {
-        const matchedRouteId = findNearestRouteCell(cell, storedCells);
-        if (matchedRouteId !== null) {
-          const group = routeGroups.get(matchedRouteId) ?? [];
-          group.push(cell);
-          routeGroups.set(matchedRouteId, group);
-          matchDiagnostics.set(matchedRouteId, {
-            routeId: matchedRouteId,
-            accepted: true,
-            method: 'exact_overlap',
-            metrics: null,
-            scoreMargin: null,
-          });
-        } else {
-          orphanCells.push(cell);
-        }
-      }
-    }
-  }
+  if (decision.routeId !== null && decision.accepted) {
+    const routePath = routePaths.find((routePath) => routePath.routeId === decision.routeId) ?? null;
+    const canonicalError = await appendRouteTrajectoryEvidence(
+      supabase,
+      decision.routeId,
+      trajectory,
+      routePath,
+    );
+    if (canonicalError) return emptySessionResult(canonicalError);
 
-  const cellKeyToRouteId = new Map<string, string>();
-  for (const [routeId, routeCells] of routeGroups) {
-    for (const cell of routeCells) {
-      cellKeyToRouteId.set(cell.cellKey, routeId);
-    }
-  }
-
-  const classified = classifyTransitions(transitions, cellKeyToRouteId);
-
-  for (const [routeId, routeCells] of routeGroups) {
-    const routeTransitions = classified.routeInternal.get(routeId) ?? [];
-    const [cellError, transitionError] = await Promise.all([
-      accumulateTrailCells(supabase, routeId, sessionId, routeCells),
-      accumulateTrailTransitions(supabase, routeId, sessionId, routeTransitions),
-    ]);
-    if (cellError) return emptySessionResult(cellError);
-    if (transitionError) return emptySessionResult(transitionError);
-    const diagnostics = matchDiagnostics.get(routeId) ?? null;
     await recordSessionAssignment(
       supabase,
       sessionId,
-      routeId,
-      routeCells.length,
-      routeTransitions.length,
-      diagnostics,
+      decision.routeId,
+      trajectory.points.length,
+      0,
+      decision,
+      trajectory.pointCount,
+      trajectory.lengthMeters,
+      0,
     );
+    trajectoryRows.push(trajectoryAttributionRow(
+      mountainId,
+      'route',
+      decision.routeId,
+      null,
+      trajectory,
+      trajectory.lengthMeters,
+      0,
+      decision.metrics,
+    ));
+  } else {
+    const candidateId = await saveCandidateTrajectory(supabase, mountainId, sessionId, trajectory);
+    if (candidateId === null) {
+      return emptySessionResult('candidate_trajectory_save_failed');
+    }
+    orphanCellsAdded += trajectory.pointCount;
+    trajectoryRows.push(trajectoryAttributionRow(
+      mountainId,
+      'candidate',
+      null,
+      candidateId,
+      trajectory,
+      0,
+      trajectory.lengthMeters,
+      decision.metrics,
+    ));
   }
 
-  if (orphanCells.length > 0) {
-    const added = await saveCandidateCells(supabase, mountainId, sessionId, orphanCells);
-    orphanCellsAdded += added;
-  }
-
-  if (classified.candidateInternal.length > 0) {
-    await saveCandidateTransitions(supabase, mountainId, sessionId, classified.candidateInternal);
-  }
-
-  for (const [routeId, crossTransitions] of classified.routeToCandidate) {
-    await saveRouteToCandidateTransitions(
-      supabase, mountainId, routeId, sessionId, 'route_to_candidate', crossTransitions,
-    );
-  }
-  for (const [routeId, crossTransitions] of classified.candidateToRoute) {
-    await saveRouteToCandidateTransitions(
-      supabase, mountainId, routeId, sessionId, 'candidate_to_route', crossTransitions,
-    );
-  }
-
-  const attributionError = await saveSessionCellAttributions(
+  const attributionError = await saveSessionTrajectoryAttributions(
     supabase,
     sessionId,
-    buildSessionCellAttributionRows(mountainId, routeGroups, orphanCells),
+    trajectoryRows,
   );
-  if (attributionError) {
-    return emptySessionResult(attributionError);
-  }
+  if (attributionError) return emptySessionResult(attributionError);
 
-  if (routeGroups.size === 0) {
-    await markSessionProcessed(supabase, sessionId);
-  }
+  await markSessionProcessed(supabase, sessionId);
 
   const purgeResult = await purgeSessionRawPoints(supabase, sessionId);
   if (purgeResult.error) {
@@ -295,7 +254,7 @@ async function processSession(
   }
 
   return {
-    affectedRouteIds: [...routeGroups.keys()],
+    affectedRouteIds: decision.routeId !== null && decision.accepted ? [decision.routeId] : [],
     orphanCellsAdded,
     purgedTrackPointCount: purgeResult.trackPointCount,
     purgedRejectedPointCount: purgeResult.rejectedPointCount,
@@ -330,6 +289,80 @@ type RawPurgeResult = {
   rejectedPointCount: number;
   error?: string;
 };
+
+type StoredRouteTrajectory = {
+  routeId: string;
+  routeDisplayName: string | null;
+  path: TrajectoryPoint[];
+  version: number;
+  sessionCount: number;
+};
+
+type StoredCandidateTrajectory = {
+  id: string;
+  mountainId: string;
+  path: TrajectoryPoint[];
+  pointCount: number;
+  sessionCount: number;
+  contributingSessions: string[];
+  avgAccuracy: number | null;
+  avgAltitude: number | null;
+  latestEvidenceAt: string | null;
+  confidence: number | null;
+};
+
+async function fetchMountainRouteTrajectories(
+  supabase: SupabaseClient,
+  mountainId: string,
+): Promise<StoredRouteTrajectory[]> {
+  const { data, error } = await supabase.rpc('route_trajectories_for_mountain', {
+    p_mountain_id: mountainId,
+  });
+  if (error || !data) return [];
+  return (data as any[]).map((row) => ({
+    routeId: row.route_id,
+    routeDisplayName: row.route_display_name ?? null,
+    path: parseGeoJsonLine(row.trail_geojson),
+    version: row.version ?? 0,
+    sessionCount: row.session_count ?? 0,
+  }));
+}
+
+async function fetchCandidateTrajectories(
+  supabase: SupabaseClient,
+  mountainId: string,
+): Promise<StoredCandidateTrajectory[]> {
+  const { data, error } = await supabase.rpc('candidate_trajectories_for_mountain', {
+    p_mountain_id: mountainId,
+  });
+  if (error || !data) return [];
+  return (data as any[]).map((row) => ({
+    id: row.id,
+    mountainId: row.mountain_id,
+    path: parseGeoJsonLine(row.trail_geojson),
+    pointCount: row.point_count ?? 0,
+    sessionCount: row.session_count ?? 0,
+    contributingSessions: row.contributing_sessions ?? [],
+    avgAccuracy: row.avg_accuracy ?? null,
+    avgAltitude: row.avg_altitude ?? null,
+    latestEvidenceAt: row.latest_evidence_at ?? null,
+    confidence: row.confidence ?? null,
+  }));
+}
+
+function parseGeoJsonLine(value: unknown): TrajectoryPoint[] {
+  if (!value || typeof value !== 'object' || !('coordinates' in value)) return [];
+  const coordinates = (value as { coordinates?: unknown }).coordinates;
+  if (!Array.isArray(coordinates)) return [];
+  return coordinates
+    .map((coordinate) => {
+      if (!Array.isArray(coordinate) || coordinate.length < 2) return null;
+      const lon = Number(coordinate[0]);
+      const lat = Number(coordinate[1]);
+      return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
+    })
+    .filter((point): point is TrajectoryPoint => point !== null);
+}
 
 async function purgeSessionRawPoints(
   supabase: SupabaseClient,
@@ -488,6 +521,61 @@ async function findBootstrapRoute(
 
 // ── Route matching ────────────────────────────────────────────────────────────
 
+function supervisedRouteDecision(
+  routeId: string,
+  routePaths: StoredRouteTrajectory[],
+  trajectory: RefinedTrajectory,
+): RouteMatchDecision {
+  const routePath = routePaths.find((route) => route.routeId === routeId);
+  const metrics = routePath && routePath.path.length > 0
+    ? weightedDiscreteFrechetTrajectory(trajectory.points, routePath.path)
+    : null;
+  return {
+    routeId,
+    accepted: true,
+    method: metrics === null ? 'trajectory_match' : 'frechet_match',
+    metrics,
+    scoreMargin: null,
+  };
+}
+
+function chooseRouteForTrajectory(
+  sessionPath: TrajectoryPoint[],
+  routePaths: StoredRouteTrajectory[],
+): RouteMatchDecision {
+  if (sessionPath.length < 2 || routePaths.length === 0) {
+    return candidateResidualDecision();
+  }
+
+  const scored = routePaths
+    .filter((routePath) => routePath.path.length >= 2)
+    .map((routePath) => ({
+      routeId: routePath.routeId,
+      metrics: weightedDiscreteFrechetTrajectory(sessionPath, routePath.path),
+    }))
+    .sort((left, right) => left.metrics.score - right.metrics.score);
+
+  const best = scored[0];
+  if (!best) return candidateResidualDecision();
+
+  const next = scored[1] ?? null;
+  const scoreMargin = next === null
+    ? Number.POSITIVE_INFINITY
+    : next.metrics.score - best.metrics.score;
+  const accepted =
+    best.metrics.frechetDistance <= routeFrechetThresholdMeters &&
+    best.metrics.overlapRatio >= routeOverlapThreshold &&
+    scoreMargin >= routeScoreMarginThresholdMeters;
+
+  return {
+    routeId: accepted ? best.routeId : null,
+    accepted,
+    method: accepted ? 'trajectory_match' : 'candidate_residual',
+    metrics: best.metrics,
+    scoreMargin,
+  };
+}
+
 export function findNearestRouteCell(
   sessionCell: TrailCell,
   storedCells: StoredRouteCell[],
@@ -566,6 +654,131 @@ function parseBbox(bbox: string): BoundingBox | null {
 }
 
 // ── Accumulation ──────────────────────────────────────────────────────────────
+
+async function appendRouteTrajectoryEvidence(
+  supabase: SupabaseClient,
+  routeId: string,
+  trajectory: RefinedTrajectory,
+  existingRoute: StoredRouteTrajectory | null,
+): Promise<string | null> {
+  const existingWeight = Math.max(0, existingRoute?.sessionCount ?? 0);
+  const line = existingRoute && existingRoute.path.length >= 2
+    ? mergeTrajectoryLines(existingRoute.path, trajectory.points, Math.max(1, existingWeight), 1)
+    : trajectory.points;
+  const version = (existingRoute?.version ?? 0) + 1;
+  const sessionCount = existingWeight + 1;
+  const gpsQualityScore = qualityScore(trajectory.avgAccuracy);
+  const confidence = routeConfidence(sessionCount, gpsQualityScore);
+
+  const { error } = await supabase.from('canonical_trails').insert({
+    route_id: routeId,
+    version,
+    geom: trajectoryLineWkt(line),
+    confidence,
+    confidence_level: confidence >= 0.70 && sessionCount >= 5 ? 'recommended' : 'reference',
+    session_count: sessionCount,
+    branch_ambiguity_score: 0,
+    gps_quality_score: gpsQualityScore,
+    algorithm_version: algorithmVersion,
+    source_kind: 'trajectory_aggregate',
+  });
+
+  return error ? error.message : null;
+}
+
+async function saveCandidateTrajectory(
+  supabase: SupabaseClient,
+  mountainId: string,
+  sessionId: string,
+  trajectory: RefinedTrajectory,
+): Promise<string | null> {
+  const candidates = await fetchCandidateTrajectories(supabase, mountainId);
+  const scored = candidates
+    .filter((candidate) => candidate.path.length >= 2)
+    .map((candidate) => ({
+      candidate,
+      metrics: weightedDiscreteFrechetTrajectory(trajectory.points, candidate.path),
+    }))
+    .sort((left, right) => left.metrics.score - right.metrics.score);
+  const best = scored[0] ?? null;
+
+  if (
+    best &&
+    best.metrics.frechetDistance <= candidateFrechetThresholdMeters &&
+    best.metrics.overlapRatio >= routeOverlapThreshold
+  ) {
+    const alreadyContributed = best.candidate.contributingSessions.includes(sessionId);
+    const sessionCount = best.candidate.sessionCount + (alreadyContributed ? 0 : 1);
+    const pointCount = best.candidate.pointCount + trajectory.pointCount;
+    const merged = mergeTrajectoryLines(
+      best.candidate.path,
+      trajectory.points,
+      Math.max(1, best.candidate.sessionCount),
+      1,
+    );
+    const { error } = await supabase
+      .from('candidate_trajectories')
+      .update({
+        geom: trajectoryLineWkt(merged),
+        point_count: pointCount,
+        session_count: sessionCount,
+        contributing_sessions: alreadyContributed
+          ? best.candidate.contributingSessions
+          : [...best.candidate.contributingSessions, sessionId],
+        avg_accuracy: weightedNullableAverage(
+          best.candidate.avgAccuracy,
+          best.candidate.pointCount,
+          trajectory.avgAccuracy,
+          trajectory.pointCount,
+        ),
+        avg_altitude: weightedNullableAverage(
+          best.candidate.avgAltitude,
+          best.candidate.pointCount,
+          trajectory.avgAltitude,
+          trajectory.pointCount,
+        ),
+        length_m: trajectoryLengthMeters(merged),
+        confidence: routeConfidence(sessionCount, qualityScore(trajectory.avgAccuracy)),
+        latest_evidence_at: latestIso(best.candidate.latestEvidenceAt, trajectory.latestEvidenceAt),
+        algorithm_version: algorithmVersion,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', best.candidate.id);
+    return error ? null : best.candidate.id;
+  }
+
+  const { data, error } = await supabase
+    .from('candidate_trajectories')
+    .insert({
+      mountain_id: mountainId,
+      geom: trajectoryLineWkt(trajectory),
+      point_count: trajectory.pointCount,
+      session_count: 1,
+      contributing_sessions: [sessionId],
+      avg_accuracy: trajectory.avgAccuracy,
+      avg_altitude: trajectory.avgAltitude,
+      length_m: trajectory.lengthMeters,
+      confidence: routeConfidence(1, qualityScore(trajectory.avgAccuracy)),
+      latest_evidence_at: trajectory.latestEvidenceAt,
+      algorithm_version: algorithmVersion,
+    })
+    .select('id')
+    .single();
+  if (error || !data) return null;
+  return data.id;
+}
+
+async function saveSessionTrajectoryAttributions(
+  supabase: SupabaseClient,
+  sessionId: string,
+  rows: SessionTrajectoryAttributionRow[],
+): Promise<string | null> {
+  const { error } = await supabase.rpc('replace_session_trajectory_attributions', {
+    p_session_id: sessionId,
+    p_rows: rows,
+  });
+  return error ? error.message : null;
+}
 
 async function accumulateTrailCells(
   supabase: SupabaseClient,
@@ -692,6 +905,9 @@ async function recordSessionAssignment(
   cellCount: number,
   transitionCount: number,
   diagnostics: RouteMatchDecision | null,
+  matchedPointCount: number | null = null,
+  matchedLengthMeters: number | null = null,
+  residualLengthMeters: number | null = null,
 ): Promise<void> {
   await supabase.from('session_route_assignments').upsert(
     {
@@ -705,6 +921,9 @@ async function recordSessionAssignment(
       score_margin: diagnostics?.scoreMargin === Number.POSITIVE_INFINITY
         ? null
         : diagnostics?.scoreMargin ?? null,
+      matched_point_count: matchedPointCount,
+      matched_length_m: matchedLengthMeters,
+      residual_length_m: residualLengthMeters,
     },
     { onConflict: 'session_id,route_id' },
   );
@@ -841,6 +1060,32 @@ function cellAttributionRow(
   };
 }
 
+function trajectoryAttributionRow(
+  mountainId: string,
+  targetKind: 'route' | 'candidate',
+  routeId: string | null,
+  candidateTrajectoryId: string | null,
+  trajectory: RefinedTrajectory,
+  matchedLengthMeters: number,
+  residualLengthMeters: number,
+  metrics: TrajectoryMatchMetrics | null,
+): SessionTrajectoryAttributionRow {
+  return {
+    mountainId,
+    targetKind,
+    routeId,
+    candidateTrajectoryId,
+    pointCount: trajectory.pointCount,
+    avgAccuracy: trajectory.avgAccuracy,
+    avgAltitude: trajectory.avgAltitude,
+    matchedLengthMeters,
+    residualLengthMeters,
+    frechetDistance: metrics?.frechetDistance ?? null,
+    overlapRatio: metrics?.overlapRatio ?? null,
+    algorithmVersion,
+  };
+}
+
 function classifyTransitions(
   transitions: TrailTransition[],
   cellKeyToRouteId: Map<string, string>,
@@ -877,4 +1122,38 @@ function classifyTransitions(
 
 if (import.meta.main) {
   Deno.serve(handleMatchAndAggregateSessions);
+}
+
+function qualityScore(accuracy: number | null): number {
+  if (accuracy === null) return 0.75;
+  return Math.max(0, Math.min(1, 1 - accuracy / 100));
+}
+
+function routeConfidence(sessionCount: number, gpsQualityScore: number): number {
+  const sessionSupportScore = Math.min(1, sessionCount / 5);
+  return Math.max(0, Math.min(1,
+    sessionSupportScore * 0.35 +
+      gpsQualityScore * 0.20 +
+      0.15 +
+      0.15 +
+      0.10 +
+      0.05
+  ));
+}
+
+function weightedNullableAverage(
+  left: number | null,
+  leftWeight: number,
+  right: number | null,
+  rightWeight: number,
+): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return (left * leftWeight + right * rightWeight) / Math.max(1, leftWeight + rightWeight);
+}
+
+function latestIso(left: string | null, right: string | null): string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Date.parse(left) >= Date.parse(right) ? left : right;
 }

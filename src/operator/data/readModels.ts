@@ -11,7 +11,7 @@ export type UploadState =
   | 'rejected'
   | 'accepted';
 export type AttributionPrecision = 'exact' | 'approximate' | 'none';
-export type RouteMatchMethod = 'exact_overlap' | 'frechet_match' | 'candidate_residual';
+export type RouteMatchMethod = 'exact_overlap' | 'frechet_match' | 'candidate_residual' | 'trajectory_match';
 
 export type Mountain = {
   id: string;
@@ -106,10 +106,39 @@ export type OperatorSessionCellAttribution = {
   lastSeenAt: string | null;
 };
 
+export type OperatorSessionTrajectoryAttribution = {
+  sessionId: string;
+  targetKind: 'route' | 'candidate';
+  routeId: string | null;
+  routeDisplayName: string | null;
+  candidateTrajectoryId: string | null;
+  pointCount: number;
+  avgAccuracy: number | null;
+  avgAltitude: number | null;
+  matchedLengthMeters: number | null;
+  residualLengthMeters: number | null;
+  frechetDistance: number | null;
+  overlapRatio: number | null;
+  algorithmVersion: string;
+  matchedAt: string;
+};
+
 export type CandidateCell = {
   cellKey: string;
   lat: number;
   lon: number;
   pointCount: number;
   sessionCount: number;
+};
+
+export type CandidateTrajectory = {
+  id: string;
+  mountainId: string;
+  trailGeoJson: GeoJsonLineString | null;
+  pointCount: number;
+  sessionCount: number;
+  lengthMeters: number | null;
+  confidence: number | null;
+  latestEvidenceAt: string | null;
+  algorithmVersion: string;
 };

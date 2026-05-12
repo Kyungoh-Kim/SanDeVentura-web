@@ -10,6 +10,29 @@ export type RoutePoint = {
   sequenceIndex: number;
 };
 
+export type TrajectoryPoint = {
+  lat: number;
+  lon: number;
+  recordedAt?: string;
+  accuracy?: number | null;
+  altitude?: number | null;
+};
+
+export type RefinedTrajectory = {
+  points: TrajectoryPoint[];
+  pointCount: number;
+  avgAccuracy: number | null;
+  avgAltitude: number | null;
+  latestEvidenceAt: string | null;
+  lengthMeters: number;
+};
+
+export type TrajectoryMatchMetrics = {
+  frechetDistance: number;
+  overlapRatio: number;
+  score: number;
+};
+
 export type TrailCell = {
   cellKey: string;
   lat: number;
@@ -426,6 +449,142 @@ export function lineStringWkt(line: Array<{ lat: number; lon: number }>): string
     return null;
   }
   return `LINESTRING(${line.map((point) => `${point.lon} ${point.lat}`).join(',')})`;
+}
+
+export function refineSessionTrajectory(points: RoutePoint[]): RefinedTrajectory {
+  const ordered = [...points]
+    .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lon))
+    .sort((left, right) => left.sequenceIndex - right.sequenceIndex);
+
+  if (ordered.length === 0) {
+    return emptyTrajectory();
+  }
+
+  const deduped: RoutePoint[] = [];
+  for (const point of ordered) {
+    const previous = deduped[deduped.length - 1];
+    if (!previous || haversineMeters(previous.lat, previous.lon, point.lat, point.lon) >= 5) {
+      deduped.push(point);
+    } else if (point.sequenceIndex === ordered[ordered.length - 1].sequenceIndex) {
+      deduped.push(point);
+    }
+  }
+
+  const simplified = simplifyPolyline(deduped, 8);
+  const resampled = resampleLine(simplified, 20);
+  const sourceForStats = deduped.length > 0 ? deduped : ordered;
+
+  return {
+    points: resampled.map((point) => ({
+      lat: point.lat,
+      lon: point.lon,
+      recordedAt: point.recordedAt,
+      accuracy: point.accuracy,
+      altitude: point.altitude,
+    })),
+    pointCount: ordered.length,
+    avgAccuracy: averageNullable(sourceForStats.map((point) => point.accuracy)),
+    avgAltitude: averageNullable(sourceForStats.map((point) => point.altitude)),
+    latestEvidenceAt: sourceForStats
+      .map((point) => point.recordedAt)
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null,
+    lengthMeters: trajectoryLengthMeters(resampled),
+  };
+}
+
+export function trajectoryLineWkt(trajectory: RefinedTrajectory | TrajectoryPoint[]): string | null {
+  const points = Array.isArray(trajectory) ? trajectory : trajectory.points;
+  return lineStringWkt(points);
+}
+
+export function weightedDiscreteFrechetTrajectory(
+  sessionPath: TrajectoryPoint[],
+  routePath: TrajectoryPoint[],
+): TrajectoryMatchMetrics {
+  if (sessionPath.length === 0 || routePath.length === 0) {
+    return { frechetDistance: Number.POSITIVE_INFINITY, overlapRatio: 0, score: Number.POSITIVE_INFINITY };
+  }
+
+  const cache: number[][] = Array.from(
+    { length: sessionPath.length },
+    () => Array(routePath.length).fill(Number.NaN),
+  );
+
+  const distanceAt = (i: number, j: number): number =>
+    haversineMeters(sessionPath[i].lat, sessionPath[i].lon, routePath[j].lat, routePath[j].lon);
+
+  const walk = (i: number, j: number): number => {
+    if (Number.isFinite(cache[i][j])) return cache[i][j];
+    const current = distanceAt(i, j);
+    if (i === 0 && j === 0) {
+      cache[i][j] = current;
+    } else if (i > 0 && j === 0) {
+      cache[i][j] = Math.max(walk(i - 1, 0), current);
+    } else if (i === 0 && j > 0) {
+      cache[i][j] = Math.max(walk(0, j - 1), current);
+    } else {
+      cache[i][j] = Math.max(
+        Math.min(walk(i - 1, j), walk(i - 1, j - 1), walk(i, j - 1)),
+        current,
+      );
+    }
+    return cache[i][j];
+  };
+
+  const frechetDistance = walk(sessionPath.length - 1, routePath.length - 1);
+  const overlapRatio = trajectoryOverlapRatio(sessionPath, routePath, 45);
+  return {
+    frechetDistance,
+    overlapRatio,
+    score: frechetDistance - overlapRatio * 20,
+  };
+}
+
+export function mergeTrajectoryLines(
+  existing: TrajectoryPoint[],
+  incoming: TrajectoryPoint[],
+  existingWeight: number,
+  incomingWeight = 1,
+): TrajectoryPoint[] {
+  if (existing.length < 2) return incoming;
+  if (incoming.length < 2) return existing;
+
+  const sampleCount = Math.max(2, Math.min(120, Math.max(existing.length, incoming.length)));
+  const existingSamples = resampleLine(existing, null, sampleCount);
+  const incomingSamples = resampleLine(incoming, null, sampleCount);
+  const mergedSampleCount = Math.min(existingSamples.length, incomingSamples.length);
+  const totalWeight = Math.max(1, existingWeight + incomingWeight);
+
+  const merged = Array.from({ length: mergedSampleCount }, (_, index) => {
+    const point = existingSamples[index];
+    const incomingPoint = incomingSamples[index];
+    return {
+      lat: (point.lat * existingWeight + incomingPoint.lat * incomingWeight) / totalWeight,
+      lon: (point.lon * existingWeight + incomingPoint.lon * incomingWeight) / totalWeight,
+    };
+  });
+
+  return chaikinOnce(merged);
+}
+
+export function trajectoryLengthMeters(points: Array<{ lat: number; lon: number }>): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += haversineMeters(points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon);
+  }
+  return total;
+}
+
+export function trajectoryOverlapRatio(
+  sessionPath: TrajectoryPoint[],
+  routePath: TrajectoryPoint[],
+  thresholdMeters: number,
+): number {
+  if (sessionPath.length === 0 || routePath.length < 2) return 0;
+  const matched = sessionPath.filter((point) =>
+    distanceToPolylineMeters(point, routePath) <= thresholdMeters
+  ).length;
+  return matched / sessionPath.length;
 }
 
 export function weightedDiscreteFrechet(
@@ -1096,6 +1255,127 @@ function chaikinOnce(points: Array<{ lat: number; lon: number }>): Array<{ lat: 
   return smoothed;
 }
 
+function simplifyPolyline<T extends { lat: number; lon: number }>(points: T[], toleranceMeters: number): T[] {
+  if (points.length <= 2) return points;
+
+  let maxDistance = 0;
+  let maxIndex = 0;
+  const start = points[0];
+  const end = points[points.length - 1];
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const distance = pointToSegmentDistanceMeters(points[i], start, end);
+    if (distance > maxDistance) {
+      maxDistance = distance;
+      maxIndex = i;
+    }
+  }
+
+  if (maxDistance <= toleranceMeters) {
+    return [start, end];
+  }
+
+  const left = simplifyPolyline(points.slice(0, maxIndex + 1), toleranceMeters);
+  const right = simplifyPolyline(points.slice(maxIndex), toleranceMeters);
+  return [...left.slice(0, -1), ...right];
+}
+
+function resampleLine<T extends { lat: number; lon: number }>(
+  points: T[],
+  spacingMeters: number | null,
+  targetCount?: number,
+): T[] {
+  if (points.length <= 1) return points;
+  if (points.length === 2 && targetCount === undefined) return points;
+
+  const totalLength = trajectoryLengthMeters(points);
+  const count = targetCount ?? Math.max(2, Math.floor(totalLength / Math.max(1, spacingMeters ?? 20)) + 1);
+  if (totalLength === 0) {
+    return Array.from({ length: count }, () => points[0]);
+  }
+
+  const distances = Array.from({ length: count }, (_, index) =>
+    (totalLength * index) / Math.max(1, count - 1)
+  );
+
+  const result: T[] = [];
+  let segmentStartDistance = 0;
+  let segmentIndex = 1;
+
+  for (let targetIndex = 0; targetIndex < distances.length; targetIndex += 1) {
+    const targetDistance = distances[targetIndex];
+    while (segmentIndex < points.length) {
+      const segmentLength = haversineMeters(
+        points[segmentIndex - 1].lat,
+        points[segmentIndex - 1].lon,
+        points[segmentIndex].lat,
+        points[segmentIndex].lon,
+      );
+      if (segmentStartDistance + segmentLength >= targetDistance) {
+        const ratio = segmentLength === 0 ? 0 : (targetDistance - segmentStartDistance) / segmentLength;
+        result.push({
+          ...points[segmentIndex - 1],
+          lat: points[segmentIndex - 1].lat + (points[segmentIndex].lat - points[segmentIndex - 1].lat) * ratio,
+          lon: points[segmentIndex - 1].lon + (points[segmentIndex].lon - points[segmentIndex - 1].lon) * ratio,
+        });
+        break;
+      }
+      segmentStartDistance += segmentLength;
+      segmentIndex += 1;
+    }
+
+    if (result.length < targetIndex + 1) {
+      result.push(points[points.length - 1]);
+    }
+  }
+
+  if (result.length === 0) {
+    result.push(points[points.length - 1]);
+  } else {
+    result[result.length - 1] = points[points.length - 1];
+  }
+
+  return result;
+}
+
+function distanceToPolylineMeters(
+  point: { lat: number; lon: number },
+  line: Array<{ lat: number; lon: number }>,
+): number {
+  if (line.length === 0) return Number.POSITIVE_INFINITY;
+  if (line.length === 1) return haversineMeters(point.lat, point.lon, line[0].lat, line[0].lon);
+
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < line.length; i += 1) {
+    best = Math.min(best, pointToSegmentDistanceMeters(point, line[i - 1], line[i]));
+  }
+  return best;
+}
+
+function pointToSegmentDistanceMeters(
+  point: { lat: number; lon: number },
+  start: { lat: number; lon: number },
+  end: { lat: number; lon: number },
+): number {
+  const metersPerDegreeLat = 111_320;
+  const metersPerDegreeLon = 111_320 * Math.cos((point.lat * Math.PI) / 180);
+  const px = point.lon * metersPerDegreeLon;
+  const py = point.lat * metersPerDegreeLat;
+  const ax = start.lon * metersPerDegreeLon;
+  const ay = start.lat * metersPerDegreeLat;
+  const bx = end.lon * metersPerDegreeLon;
+  const by = end.lat * metersPerDegreeLat;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) {
+    return haversineMeters(point.lat, point.lon, start.lat, start.lon);
+  }
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared));
+  const cx = ax + dx * t;
+  const cy = ay + dy * t;
+  return Math.hypot(px - cx, py - cy);
+}
+
 function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6_371_000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -1125,6 +1405,13 @@ function average(values: number[]): number {
   return values.reduce((total, value) => total + value, 0) / values.length;
 }
 
+function averageNullable(values: Array<number | null>): number | null {
+  const finite = values.filter((value): value is number =>
+    typeof value === 'number' && Number.isFinite(value)
+  );
+  return finite.length === 0 ? null : average(finite);
+}
+
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
 }
@@ -1147,5 +1434,16 @@ function emptyRoute(): CanonicalRoute {
     transitionConsistencyScore: 0,
     rejectedPointRate: 0,
     recencyScore: 0,
+  };
+}
+
+function emptyTrajectory(): RefinedTrajectory {
+  return {
+    points: [],
+    pointCount: 0,
+    avgAccuracy: null,
+    avgAltitude: null,
+    latestEvidenceAt: null,
+    lengthMeters: 0,
   };
 }

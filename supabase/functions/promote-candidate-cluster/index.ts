@@ -1,15 +1,8 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { gridDisk } from 'npm:h3-js';
 
 import { jsonResponse } from '../_shared/response.ts';
-import {
-  inferCanonicalRouteFromCells,
-  lineStringWkt,
-  type TrailCell,
-  type TrailTransition,
-} from '../_shared/route_inference.ts';
 
-type SupabaseClient = ReturnType<typeof createClient>;
+type SupabaseClient = any;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -23,7 +16,9 @@ export async function handlePromoteCandidateCluster(
   }
 
   let body: unknown;
-  try { body = await request.json(); } catch {
+  try {
+    body = await request.json();
+  } catch {
     return jsonResponse({ success: false, errors: ['invalid_json'] }, 400);
   }
 
@@ -48,182 +43,131 @@ export async function handlePromoteCandidateCluster(
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
+  return promoteTrajectoryCandidate(supabase, mountainId, displayName.trim());
+}
 
-  // ── 1. Fetch candidate cells with lat/lon ─────────────────────────────────
+async function promoteTrajectoryCandidate(
+  supabase: SupabaseClient,
+  mountainId: string,
+  displayName: string,
+): Promise<Response> {
+  const { data: rawCandidates, error: candidatesError } = await supabase
+    .rpc('candidate_trajectories_for_mountain', { p_mountain_id: mountainId });
 
-  const { data: rawCells, error: cellsError } = await supabase
-    .rpc('candidate_cells_for_mountain', { p_mountain_id: mountainId });
-
-  if (cellsError) {
-    return jsonResponse({ success: false, errors: [cellsError.message] }, 500);
+  if (candidatesError) {
+    return jsonResponse({ success: false, errors: [candidatesError.message] }, 500);
   }
-  if (!rawCells || rawCells.length < 3) {
+  if (!rawCandidates || rawCandidates.length === 0) {
     return jsonResponse(
-      { success: false, errors: ['insufficient_candidate_cells'] },
+      { success: false, errors: ['insufficient_candidate_trajectories'] },
       400,
     );
   }
 
-  // ── 2. Build route ID ─────────────────────────────────────────────────────
+  const candidate = [...rawCandidates].sort((left: any, right: any) =>
+    (right.point_count ?? 0) - (left.point_count ?? 0)
+  )[0] as any;
+  const lineWkt = lineStringWktFromGeoJson(candidate.trail_geojson);
+  if (lineWkt === null) {
+    return jsonResponse({ success: false, errors: ['candidate_has_no_geometry'] }, 400);
+  }
 
-  let slug = displayName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  let slug = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   if (!slug) slug = Date.now().toString(36);
   const routeId = `${mountainId}-${slug}`;
 
   const { data: existing } = await supabase
-    .from('routes').select('id').eq('id', routeId).maybeSingle();
+    .from('routes')
+    .select('id')
+    .eq('id', routeId)
+    .maybeSingle();
   if (existing) {
     return jsonResponse({ success: false, errors: ['route_id_conflict'] }, 409);
   }
 
-  // ── 3. INSERT route ───────────────────────────────────────────────────────
-
   const { error: routeError } = await supabase.from('routes').insert({
     id: routeId,
     mountain_id: mountainId,
-    display_name: displayName.trim(),
+    display_name: displayName,
   });
   if (routeError) {
     return jsonResponse({ success: false, errors: [routeError.message] }, 500);
   }
 
-  // ── 4. Build TrailCell rows ───────────────────────────────────────────────
-
-  const cells: TrailCell[] = (rawCells as any[]).map((row) => ({
-    cellKey: row.cell_key,
-    lat: Number(row.lat),
-    lon: Number(row.lon),
-    pointCount: row.point_count,
-    sessionCount: row.session_count,
-    avgAccuracy: row.avg_accuracy ?? null,
-    avgAltitude: row.avg_altitude ?? null,
-    lastSeenAt: row.last_seen_at,
-    qualityScore: 0.7,
-  }));
-
-  // ── 5. Build transitions from H3 grid adjacency ───────────────────────────
-
-  const cellKeySet = new Set(cells.map((c) => c.cellKey));
-  const transitionMap = new Map<string, TrailTransition>();
-  const sessionCountByCell = new Map(cells.map((c) => [c.cellKey, c.sessionCount]));
-
-  for (const cell of cells) {
-    const neighbors = gridDisk(cell.cellKey, 1).filter(
-      (n: string) => n !== cell.cellKey && cellKeySet.has(n),
-    );
-    for (const neighbor of neighbors) {
-      const pairKey = [cell.cellKey, neighbor].sort().join('|');
-      if (!transitionMap.has(pairKey)) {
-        const sc = Math.min(
-          sessionCountByCell.get(cell.cellKey) ?? 1,
-          sessionCountByCell.get(neighbor) ?? 1,
-        );
-        transitionMap.set(pairKey, {
-          fromCellKey: cell.cellKey,
-          toCellKey: neighbor,
-          transitionCount: sc,
-          sessionCount: sc,
-          edgeCost: 0.1,
-        });
-      }
-    }
-  }
-  const transitions: TrailTransition[] = [...transitionMap.values()];
-
-  // ── 6. INSERT trail_cells ─────────────────────────────────────────────────
-
-  const { error: trailCellError } = await supabase.from('trail_cells').insert(
-    cells.map((c) => ({
-      route_id: routeId,
-      cell_key: c.cellKey,
-      geom: `POINT(${c.lon} ${c.lat})`,
-      point_count: c.pointCount,
-      session_count: c.sessionCount,
-      avg_accuracy: c.avgAccuracy,
-      avg_altitude: c.avgAltitude,
-      last_seen_at: c.lastSeenAt,
-      quality_score: c.qualityScore,
-    })),
-  );
-  if (trailCellError) {
-    return jsonResponse({ success: false, errors: [trailCellError.message] }, 500);
-  }
-
-  // ── 7. INSERT trail_cell_transitions ─────────────────────────────────────
-
-  if (transitions.length > 0) {
-    await supabase.from('trail_cell_transitions').insert(
-      transitions.map((t) => ({
-        route_id: routeId,
-        from_cell_key: t.fromCellKey,
-        to_cell_key: t.toCellKey,
-        transition_count: t.transitionCount,
-        session_count: t.sessionCount,
-        edge_cost: t.edgeCost,
-      })),
-    );
-  }
-
-  // ── 8. Infer canonical trail ──────────────────────────────────────────────
-
-  const maxSessionCount = Math.max(...cells.map((c) => c.sessionCount), 1);
-  const route = inferCanonicalRouteFromCells(cells, transitions, {
-    sessionCount: maxSessionCount,
-    latestEvidenceAt: cells[0]?.lastSeenAt ?? null,
-  });
+  const sessionCount = Math.max(candidate.session_count ?? 1, 1);
+  const confidence = Math.max(0, Math.min(1, Math.min(1, sessionCount / 5) * 0.35 + 0.65));
+  const confidenceLevel = confidence >= 0.70 && sessionCount >= 5 ? 'recommended' : 'reference';
 
   const { error: canonicalError } = await supabase.from('canonical_trails').insert({
     route_id: routeId,
     version: 1,
-    geom: lineStringWkt(route.line),
-    confidence: route.confidence,
-    confidence_level: route.confidenceLevel,
-    session_count: route.sessionCount,
-    branch_ambiguity_score: route.branchAmbiguityScore,
-    gps_quality_score: route.gpsQualityScore,
+    geom: lineWkt,
+    confidence,
+    confidence_level: confidenceLevel,
+    session_count: sessionCount,
+    branch_ambiguity_score: 0,
+    gps_quality_score: 0.75,
+    algorithm_version: candidate.algorithm_version ?? 'trajectory-v1',
+    source_kind: 'trajectory_candidate_promotion',
   });
   if (canonicalError) {
     return jsonResponse({ success: false, errors: [canonicalError.message] }, 500);
   }
 
-  // ── 9. Reset contributing sessions for re-attribution ────────────────────
-
-  const contributingSessions: string[] = (rawCells as any[]).flatMap(
-    (row) => (row.contributing_sessions as string[] | null) ?? [],
-  );
-  const uniqueSessions = [...new Set(contributingSessions)];
-
+  const uniqueSessions = [...new Set((candidate.contributing_sessions ?? []) as string[])];
   if (uniqueSessions.length > 0) {
     await supabase
-      .from('hiking_sessions')
-      .update({ status: 'ingested' })
-      .in('id', uniqueSessions)
-      .eq('status', 'complete');
-
-    await supabase
-      .from('session_cell_attributions')
-      .delete()
+      .from('session_trajectory_attributions')
+      .update({
+        target_kind: 'route',
+        route_id: routeId,
+        candidate_trajectory_id: null,
+        matched_at: new Date().toISOString(),
+      })
       .eq('target_kind', 'candidate')
-      .in('session_id', uniqueSessions);
+      .eq('candidate_trajectory_id', candidate.id);
+
+    await supabase.from('session_route_assignments').upsert(
+      uniqueSessions.map((sessionId) => ({
+        session_id: sessionId,
+        route_id: routeId,
+        contributed_cell_count: 0,
+        contributed_transition_count: 0,
+        match_method: 'trajectory_match',
+        matched_point_count: null,
+        matched_length_m: candidate.length_m ?? null,
+        residual_length_m: 0,
+      })),
+      { onConflict: 'session_id,route_id' },
+    );
   }
 
-  // ── 10. Clear promoted candidate cells ───────────────────────────────────
-
   await supabase
-    .from('candidate_cells')
-    .delete()
-    .eq('mountain_id', mountainId);
+    .from('candidate_trajectories')
+    .update({ status: 'promoted', updated_at: new Date().toISOString() })
+    .eq('id', candidate.id);
 
   return jsonResponse({
     success: true,
     routeId,
-    confidenceLevel: route.confidenceLevel,
-    confidence: route.confidence,
-    cellCount: cells.length,
-    transitionCount: transitions.length,
-    sessionCount: maxSessionCount,
+    confidenceLevel,
+    confidence,
+    cellCount: 0,
+    transitionCount: 0,
+    sessionCount,
     sessionsReset: uniqueSessions.length,
   });
+}
+
+function lineStringWktFromGeoJson(value: unknown): string | null {
+  if (!isRecord(value) || !Array.isArray(value.coordinates)) return null;
+  const pairs = value.coordinates.map((coordinate) => {
+    if (!Array.isArray(coordinate) || coordinate.length < 2) return null;
+    const lon = Number(coordinate[0]);
+    const lat = Number(coordinate[1]);
+    return Number.isFinite(lon) && Number.isFinite(lat) ? `${lon} ${lat}` : null;
+  }).filter((pair): pair is string => pair !== null);
+  return pairs.length >= 2 ? `LINESTRING(${pairs.join(',')})` : null;
 }
 
 if (import.meta.main) {

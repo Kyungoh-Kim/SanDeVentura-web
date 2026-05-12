@@ -7,6 +7,7 @@ import {
   type OperatorSessionCellAttribution,
   type OperatorSessionIngestion,
   type OperatorSessionRouteAttribution,
+  type OperatorSessionTrajectoryAttribution,
   type RouteState,
 } from './readModels';
 import { supabase } from './supabaseClient';
@@ -100,6 +101,23 @@ type SessionCellAttributionRow = {
   avg_accuracy: number | null;
   avg_altitude: number | null;
   last_seen_at: string | null;
+};
+
+type SessionTrajectoryAttributionRow = {
+  session_id: string;
+  target_kind: 'route' | 'candidate';
+  route_id: string | null;
+  route_display_name: string | null;
+  candidate_trajectory_id: string | null;
+  point_count: number;
+  avg_accuracy: number | null;
+  avg_altitude: number | null;
+  matched_length_m: number | null;
+  residual_length_m: number | null;
+  frechet_distance: number | null;
+  overlap_ratio: number | null;
+  algorithm_version: string;
+  matched_at: string;
 };
 
 export async function fetchOperatorSummary(): Promise<OperatorOverviewMetrics | null> {
@@ -322,6 +340,40 @@ export async function fetchSessionCellAttribution(
     avgAccuracy: row.avg_accuracy,
     avgAltitude: row.avg_altitude,
     lastSeenAt: row.last_seen_at,
+  }));
+}
+
+export async function fetchSessionTrajectoryAttribution(
+  sessionId: string,
+): Promise<OperatorSessionTrajectoryAttribution[]> {
+  if (supabase === null) return [];
+
+  const { data, error } = await supabase
+    .from('operator_session_trajectory_attribution')
+    .select(
+      'session_id, target_kind, route_id, route_display_name, candidate_trajectory_id, point_count, avg_accuracy, avg_altitude, matched_length_m, residual_length_m, frechet_distance, overlap_ratio, algorithm_version, matched_at',
+    )
+    .eq('session_id', sessionId)
+    .order('target_kind')
+    .order('route_id');
+
+  if (error) throw new Error(error.message);
+
+  return ((data ?? []) as SessionTrajectoryAttributionRow[]).map((row) => ({
+    sessionId: row.session_id,
+    targetKind: row.target_kind,
+    routeId: row.route_id,
+    routeDisplayName: row.route_display_name,
+    candidateTrajectoryId: row.candidate_trajectory_id,
+    pointCount: row.point_count,
+    avgAccuracy: row.avg_accuracy,
+    avgAltitude: row.avg_altitude,
+    matchedLengthMeters: row.matched_length_m,
+    residualLengthMeters: row.residual_length_m,
+    frechetDistance: row.frechet_distance,
+    overlapRatio: row.overlap_ratio,
+    algorithmVersion: row.algorithm_version,
+    matchedAt: row.matched_at,
   }));
 }
 
