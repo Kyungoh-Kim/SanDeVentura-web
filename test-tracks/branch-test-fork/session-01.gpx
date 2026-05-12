@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="SanDeVentura synthetic branch seed" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Synthetic Branch Fork Session 01</name>
+  </metadata>
+  <trk>
+    <name>Synthetic Branch Fork Session 01</name>
+    <trkseg>
+      <trkpt lat="37.6399850" lon="127.0049850">
+        <ele>300.0</ele>
+        <time>2026-06-11T02:00:00.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6403350" lon="127.0050048">
+        <ele>308.0</ele>
+        <time>2026-06-11T02:00:15.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6406850" lon="127.0050234">
+        <ele>316.0</ele>
+        <time>2026-06-11T02:00:30.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6410350" lon="127.0050395">
+        <ele>324.0</ele>
+        <time>2026-06-11T02:00:45.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6413850" lon="127.0050523">
+        <ele>332.0</ele>
+        <time>2026-06-11T02:01:00.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6417350" lon="127.0050609">
+        <ele>340.0</ele>
+        <time>2026-06-11T02:01:15.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6420850" lon="127.0050648">
+        <ele>348.0</ele>
+        <time>2026-06-11T02:01:30.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6424350" lon="127.0050637">
+        <ele>356.0</ele>
+        <time>2026-06-11T02:01:45.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6427850" lon="127.0050577">
+        <ele>364.0</ele>
+        <time>2026-06-11T02:02:00.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6431350" lon="127.0050472">
+        <ele>372.0</ele>
+        <time>2026-06-11T02:02:15.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6433650" lon="127.0045650">
+        <ele>380.0</ele>
+        <time>2026-06-11T02:02:30.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6435950" lon="127.0041450">
+        <ele>388.0</ele>
+        <time>2026-06-11T02:02:45.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6438250" lon="127.0037250">
+        <ele>396.0</ele>
+        <time>2026-06-11T02:03:00.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6440550" lon="127.0033050">
+        <ele>404.0</ele>
+        <time>2026-06-11T02:03:15.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6442850" lon="127.0028850">
+        <ele>412.0</ele>
+        <time>2026-06-11T02:03:30.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6445150" lon="127.0024650">
+        <ele>420.0</ele>
+        <time>2026-06-11T02:03:45.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6447450" lon="127.0020450">
+        <ele>428.0</ele>
+        <time>2026-06-11T02:04:00.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6449750" lon="127.0016250">
+        <ele>436.0</ele>
+        <time>2026-06-11T02:04:15.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6452050" lon="127.0012050">
+        <ele>444.0</ele>
+        <time>2026-06-11T02:04:30.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6454350" lon="127.0007850">
+        <ele>452.0</ele>
+        <time>2026-06-11T02:04:45.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6456650" lon="127.0003650">
+        <ele>460.0</ele>
+        <time>2026-06-11T02:05:00.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6458950" lon="126.9999450">
+        <ele>468.0</ele>
+        <time>2026-06-11T02:05:15.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6461250" lon="126.9995250">
+        <ele>476.0</ele>
+        <time>2026-06-11T02:05:30.000Z</time>
+      </trkpt>
+      <trkpt lat="37.6463550" lon="126.9991050">
+        <ele>484.0</ele>
+        <time>2026-06-11T02:05:45.000Z</time>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>
