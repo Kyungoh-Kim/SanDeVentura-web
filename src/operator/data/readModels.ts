@@ -11,7 +11,14 @@ export type UploadState =
   | 'rejected'
   | 'accepted';
 export type AttributionPrecision = 'exact' | 'approximate' | 'none';
-export type RouteMatchMethod = 'exact_overlap' | 'frechet_match' | 'candidate_residual' | 'trajectory_match';
+export type RouteMatchMethod =
+  | 'exact_overlap'
+  | 'frechet_match'
+  | 'candidate_residual'
+  | 'trajectory_match'
+  | 'trail_graph_interval';
+export type ResidualKind = 'branch_out' | 'branch_in' | 'connector' | 'standalone';
+export type EdgeStatus = 'candidate' | 'reference' | 'recommended' | 'retired';
 
 export type Mountain = {
   id: string;
@@ -73,18 +80,21 @@ export type OperatorSessionIngestion = {
   rejectedPointCount: number;
   lastError: string | null;
   matchedRouteCount: number;
-  matchedRouteCellCount: number;
+  matchedRouteSupportCount: number;
   matchedRoutePointCount: number | null;
-  candidateCellCount: number;
+  candidateSupportCount: number;
   candidatePointCount: number | null;
   attributionPrecision: AttributionPrecision;
+  processedAlgorithmVersion: string | null;
+  rawRetentionState: 'available' | 'purged';
+  recomputable: boolean;
 };
 
 export type OperatorSessionRouteAttribution = {
   sessionId: string;
   routeId: string;
   routeDisplayName: string;
-  cellCount: number;
+  supportCount: number;
   pointCount: number | null;
   transitionCount: number;
   matchMethod: RouteMatchMethod;
@@ -94,51 +104,91 @@ export type OperatorSessionRouteAttribution = {
   attributionPrecision: AttributionPrecision;
 };
 
-export type OperatorSessionCellAttribution = {
+export type OperatorSessionEdgeAttribution = {
   sessionId: string;
-  targetKind: 'route' | 'candidate';
+  mountainId: string;
+  intervalIndex: number;
+  targetKind: 'edge' | 'candidate';
+  edgeId: string | null;
   routeId: string | null;
   routeDisplayName: string | null;
-  cellKey: string;
-  pointCount: number;
-  avgAccuracy: number | null;
-  avgAltitude: number | null;
-  lastSeenAt: string | null;
-};
-
-export type OperatorSessionTrajectoryAttribution = {
-  sessionId: string;
-  targetKind: 'route' | 'candidate';
-  routeId: string | null;
-  routeDisplayName: string | null;
-  candidateTrajectoryId: string | null;
+  candidateEdgeId: string | null;
+  residualKind: ResidualKind | null;
+  direction: 'forward' | 'reverse' | 'unknown';
+  sessionStartMeasureMeters: number | null;
+  sessionEndMeasureMeters: number | null;
+  edgeStartMeasureMeters: number | null;
+  edgeEndMeasureMeters: number | null;
+  attachStartEdgeId: string | null;
+  attachStartMeasureMeters: number | null;
+  attachEndEdgeId: string | null;
+  attachEndMeasureMeters: number | null;
   pointCount: number;
   avgAccuracy: number | null;
   avgAltitude: number | null;
   matchedLengthMeters: number | null;
-  residualLengthMeters: number | null;
-  frechetDistance: number | null;
-  overlapRatio: number | null;
   algorithmVersion: string;
   matchedAt: string;
+  rawRetentionState: 'available' | 'purged';
+  recomputable: boolean;
 };
 
-export type CandidateCell = {
-  cellKey: string;
-  lat: number;
-  lon: number;
-  pointCount: number;
+export type OperatorTrajectorySegmentMetric = {
+  mountainId: string;
+  targetKind: 'edge' | 'candidate';
+  targetId: string;
+  routeId: string | null;
+  edgeId?: string | null;
+  candidateEdgeId: string | null;
+  direction: 'forward' | 'reverse';
+  segmentIndex: number;
+  startMeasureMeters: number;
+  endMeasureMeters: number;
   sessionCount: number;
+  sampleCount: number;
+  durationSecondsAvg: number | null;
+  durationSecondsSum: number;
+  durationObservationCount: number;
+  speedMetersPerSecondAvg: number | null;
+  elevationGainMeters: number;
+  elevationLossMeters: number;
+  abruptAltitudeChangeCount: number;
+  maxAbsAltitudeDeltaMeters: number | null;
+  latestEvidenceAt: string | null;
+  algorithmVersion: string;
+  updatedAt: string;
 };
 
-export type CandidateTrajectory = {
+export type TrailEdge = {
   id: string;
   mountainId: string;
+  routeId: string | null;
   trailGeoJson: GeoJsonLineString | null;
+  lengthMeters: number | null;
+  sessionCount: number;
+  pointCount: number;
+  confidence: number | null;
+  status: EdgeStatus;
+  algorithmVersion: string;
+};
+
+export type CandidateEdge = {
+  id: string;
+  mountainId: string;
+  mountainDisplayName: string;
+  trailGeoJson: GeoJsonLineString | null;
+  attachStartEdgeId: string | null;
+  attachStartMeasureMeters: number | null;
+  attachEndEdgeId: string | null;
+  attachEndMeasureMeters: number | null;
+  residualKind: ResidualKind;
   pointCount: number;
   sessionCount: number;
   lengthMeters: number | null;
   confidence: number | null;
+  confidenceLevel: 'reference' | 'recommended';
+  promotionReady: boolean;
+  validationFailureReason: string | null;
   latestEvidenceAt: string | null;
   algorithmVersion: string;
 };

@@ -1,14 +1,13 @@
 ﻿import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
-import { type CandidateCell, type Mountain, type OperatorRouteCoverage, type OperatorRouteDetail } from '../data/readModels';
+import { type Mountain, type OperatorRouteCoverage, type OperatorRouteDetail } from '../data/readModels';
 import {
   fetchMountains,
   formatBbox,
   parseBbox,
   updateMountainBbox,
 } from '../data/mountainsRepository';
-import { fetchCandidateCells, fetchTrailCells } from '../data/operationsRepository';
 import { fetchMountainRouteDetails, fetchRouteCoverage } from '../data/routesRepository';
 
 const OperatorRouteMap = lazy(() =>
@@ -31,7 +30,6 @@ export function MountainsPage() {
   const [edit, setEdit] = useState<EditState | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewRoutes, setPreviewRoutes] = useState<OperatorRouteDetail[]>([]);
-  const [previewCells, setPreviewCells] = useState<CandidateCell[]>([]);
   const [page, setPage] = useState(1);
 
   const loadMountains = useCallback(() => {
@@ -73,19 +71,17 @@ export function MountainsPage() {
   }, [loadMountains]);
 
   useEffect(() => {
-    if (previewId === null) { setPreviewRoutes([]); setPreviewCells([]); return; }
+    if (previewId === null) {
+      setPreviewRoutes([]);
+      return;
+    }
     let cancelled = false;
-    Promise.all([
-      fetchMountainRouteDetails(previewId),
-      fetchCandidateCells(previewId),
-      fetchTrailCells(previewId),
-    ]).then(([routes, candidateCells, trailCells]) => {
+    fetchMountainRouteDetails(previewId).then((routes) => {
       if (!cancelled) {
         setPreviewRoutes(routes);
-        setPreviewCells([...trailCells, ...candidateCells]);
       }
     }).catch(() => {
-      if (!cancelled) { setPreviewRoutes([]); setPreviewCells([]); }
+      if (!cancelled) setPreviewRoutes([]);
     });
     return () => { cancelled = true; };
   }, [previewId]);
@@ -322,8 +318,12 @@ export function MountainsPage() {
                   geometry={null}
                   routeState="none"
                   bbox={previewBbox}
-                  routes={previewRoutes.filter((r) => r.trailGeoJson !== null).map((r) => ({ geometry: r.trailGeoJson!, routeState: r.routeState }))}
-                  cells={previewCells}
+                  routes={previewRoutes.filter((r) => r.trailGeoJson !== null).map((r) => ({
+                    geometry: r.trailGeoJson!,
+                    id: r.routeId ?? undefined,
+                    label: r.routeDisplayName ?? r.routeId ?? undefined,
+                    routeState: r.routeState,
+                  }))}
                   title={previewMountain.displayName}
                 />
               </Suspense>

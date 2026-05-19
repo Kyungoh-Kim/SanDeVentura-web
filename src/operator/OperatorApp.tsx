@@ -1,4 +1,13 @@
 import { useEffect, useState } from 'react';
+import {
+  Activity,
+  CircleUser,
+  LayoutDashboard,
+  List,
+  Mountain,
+  Route,
+  Search,
+} from 'lucide-react';
 
 import { DiscoveryPage } from './pages/DiscoveryPage';
 import { MountainsPage } from './pages/MountainsPage';
@@ -8,12 +17,12 @@ import { RoutesPage } from './pages/RoutesPage';
 import { SessionsPage } from './pages/SessionsPage';
 
 const NAV = [
-  { id: 'overview',   label: 'Overview' },
-  { id: 'routes',     label: 'Routes' },
-  { id: 'sessions',   label: 'Sessions' },
-  { id: 'quality',    label: 'Quality' },
-  { id: 'mountains',  label: 'Mountains' },
-  { id: 'discovery',  label: 'Discovery' },
+  { id: 'overview',   label: 'Overview',  icon: LayoutDashboard },
+  { id: 'routes',     label: 'Routes',    icon: Route },
+  { id: 'sessions',   label: 'Sessions',  icon: List },
+  { id: 'quality',    label: 'Quality',   icon: Activity },
+  { id: 'mountains',  label: 'Mountains', icon: Mountain },
+  { id: 'discovery',  label: 'Discovery', icon: Search },
 ] as const;
 
 type PageId = (typeof NAV)[number]['id'];
@@ -45,18 +54,18 @@ export function OperatorApp() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <MountainIcon />
+          <Mountain size={22} strokeWidth={1.8} />
           SanDeVentura
         </div>
         <nav className="sidebar-nav">
-          {NAV.map(({ id, label }) => (
+          {NAV.map(({ id, label, icon: Icon }) => (
             <a
               key={id}
               href={`#${id}`}
               className={active === id ? 'active' : ''}
               onClick={(e) => { e.preventDefault(); navigate(id); }}
             >
-              <NavIcon id={id} />
+              <Icon size={16} strokeWidth={1.9} />
               {label}
             </a>
           ))}
@@ -64,7 +73,7 @@ export function OperatorApp() {
         <div className="sidebar-footer">
           <div className="sidebar-role">Operator only</div>
           <div className="sidebar-user">
-            <span className="avatar">A</span>
+            <span className="avatar"><CircleUser size={15} strokeWidth={2} /></span>
             Admin
           </div>
         </div>
@@ -76,7 +85,7 @@ export function OperatorApp() {
             <span className="online-dot" />
             Online
           </span>
-          <span className="avatar">A</span>
+          <span className="avatar"><CircleUser size={15} strokeWidth={2} /></span>
         </header>
 
         <main className="content">
@@ -103,69 +112,4 @@ export function OperatorApp() {
       </div>
     </div>
   );
-}
-
-function MountainIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path
-        d="M3 20L9 8l4 5 3-4 5 11H3Z"
-        fill="rgba(255,255,255,0.2)"
-        stroke="rgba(255,255,255,0.88)"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function NavIcon({ id }: { id: string }) {
-  if (id === 'overview') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
-        <rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" />
-      </svg>
-    );
-  }
-  if (id === 'routes') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 17c3-3 6-5 9-5s6 2 9-2" />
-        <circle cx="5" cy="19" r="2" /><circle cx="19" cy="10" r="2" />
-      </svg>
-    );
-  }
-  if (id === 'sessions') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" />
-        <line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" />
-        <line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
-      </svg>
-    );
-  }
-  if (id === 'quality') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-      </svg>
-    );
-  }
-  if (id === 'mountains') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 20L9 8l4 5 3-4 5 11H3Z" />
-      </svg>
-    );
-  }
-  if (id === 'discovery') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-        <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
-      </svg>
-    );
-  }
-  return null;
 }

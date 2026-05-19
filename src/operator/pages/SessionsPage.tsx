@@ -1,27 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 
+import { CopyableId } from '../components/CopyableId';
 import {
-  type OperatorSessionCellAttribution,
   type OperatorSessionIngestion,
   type OperatorSessionRouteAttribution,
-  type OperatorSessionTrajectoryAttribution,
+  type OperatorSessionEdgeAttribution,
 } from '../data/readModels';
 import { getPageCount, getPageItems, Pagination } from '../components/Pagination';
 import {
-  fetchSessionCellAttribution,
   fetchSessionIngestion,
+  fetchSessionEdgeAttribution,
   fetchSessionRouteAttribution,
-  fetchSessionTrajectoryAttribution,
 } from '../data/routesRepository';
 
 type DetailState = {
   routes: OperatorSessionRouteAttribution[];
-  cells: OperatorSessionCellAttribution[];
-  trajectories: OperatorSessionTrajectoryAttribution[];
+  edges: OperatorSessionEdgeAttribution[];
   status: 'idle' | 'loading' | 'ready' | 'error';
 };
 
-const emptyDetail: DetailState = { routes: [], cells: [], trajectories: [], status: 'idle' };
+const emptyDetail: DetailState = { routes: [], edges: [], status: 'idle' };
 
 export function SessionsPage() {
   const [rows, setRows] = useState<OperatorSessionIngestion[] | null>(null);
@@ -46,20 +44,17 @@ export function SessionsPage() {
     }
 
     let active = true;
-    setDetail({ routes: [], trajectories: [], cells: [], status: 'loading' });
+    setDetail({ routes: [], edges: [], status: 'loading' });
 
     Promise.all([
       fetchSessionRouteAttribution(selected.sessionId),
-      fetchSessionTrajectoryAttribution(selected.sessionId),
-      selected.attributionPrecision === 'exact'
-        ? fetchSessionCellAttribution(selected.sessionId)
-        : Promise.resolve([]),
+      fetchSessionEdgeAttribution(selected.sessionId),
     ])
-      .then(([routes, trajectories, cells]) => {
-        if (active) setDetail({ routes, trajectories, cells, status: 'ready' });
+      .then(([routes, edges]) => {
+        if (active) setDetail({ routes, edges, status: 'ready' });
       })
       .catch(() => {
-        if (active) setDetail({ routes: [], trajectories: [], cells: [], status: 'error' });
+        if (active) setDetail({ routes: [], edges: [], status: 'error' });
       });
 
     return () => {
@@ -73,8 +68,8 @@ export function SessionsPage() {
       total: list.length,
       ingested: list.filter((row) => row.pipelineState === 'ingested').length,
       exact: list.filter((row) => row.attributionPrecision === 'exact').length,
-      routeCells: list.reduce((sum, row) => sum + row.matchedRouteCellCount, 0),
-      candidateCells: list.reduce((sum, row) => sum + row.candidateCellCount, 0),
+      routeSupport: list.reduce((sum, row) => sum + row.matchedRouteSupportCount, 0),
+      candidateSupport: list.reduce((sum, row) => sum + row.candidateSupportCount, 0),
     };
   }, [rows]);
 
@@ -115,10 +110,8 @@ export function SessionsPage() {
   }, [filteredRows, selected]);
 
   const unavailable = rows === null;
-  const candidateCells = detail.cells.filter((cell) => cell.targetKind === 'candidate');
-  const routeCells = detail.cells.filter((cell) => cell.targetKind === 'route');
-  const candidateTrajectories = detail.trajectories.filter((row) => row.targetKind === 'candidate');
-  const routeTrajectories = detail.trajectories.filter((row) => row.targetKind === 'route');
+  const candidateEdges = detail.edges.filter((row) => row.targetKind === 'candidate');
+  const matchedEdges = detail.edges.filter((row) => row.targetKind === 'edge');
 
   return (
     <>
@@ -133,8 +126,8 @@ export function SessionsPage() {
         <StatCard label="Total sessions" value={unavailable ? '-' : stats.total} />
         <StatCard label="Ingested" value={unavailable ? '-' : stats.ingested} tone="good" />
         <StatCard label="Exact attribution" value={unavailable ? '-' : stats.exact} />
-        <StatCard label="Route segments" value={unavailable ? '-' : stats.routeCells} />
-        <StatCard label="Candidate trajectories" value={unavailable ? '-' : stats.candidateCells} tone="warn" />
+        <StatCard label="Edge support" value={unavailable ? '-' : stats.routeSupport} />
+        <StatCard label="Candidate edges" value={unavailable ? '-' : stats.candidateSupport} tone="warn" />
       </div>
 
       <div className="sessions-layout">
@@ -186,8 +179,8 @@ export function SessionsPage() {
                     <th>Mountain</th>
                     <th>State</th>
                     <th>Precision</th>
-                    <th>Route support</th>
-                    <th>Candidate support</th>
+                    <th>Edge support</th>
+                    <th>Candidate edges</th>
                     <th>Accepted</th>
                     <th>Rejected</th>
                   </tr>
@@ -208,8 +201,7 @@ export function SessionsPage() {
                         style={{ cursor: 'pointer' }}
                       >
                         <td>
-                          <span className="cell-name cell-mono">{shortId(row.sessionId)}</span>
-                          <span className="cell-sub">{row.sessionId}</span>
+                          <span className="cell-name"><CopyableId value={row.sessionId} /></span>
                         </td>
                         <td>
                           <span className="cell-name">{row.mountainDisplayName}</span>
@@ -217,8 +209,8 @@ export function SessionsPage() {
                         </td>
                         <td><span className={`status-badge ${row.pipelineState}`}>{row.pipelineState}</span></td>
                         <td><span className={`status-badge ${row.attributionPrecision}`}>{row.attributionPrecision}</span></td>
-                        <td>{formatCellsAndPoints(row.matchedRouteCellCount, row.matchedRoutePointCount)}</td>
-                        <td>{formatCellsAndPoints(row.candidateCellCount, row.candidatePointCount)}</td>
+                        <td>{formatSupportAndPoints(row.matchedRouteSupportCount, row.matchedRoutePointCount)}</td>
+                        <td>{formatSupportAndPoints(row.candidateSupportCount, row.candidatePointCount)}</td>
                         <td>{row.acceptedPointCount.toLocaleString()}</td>
                         <td>{row.rejectedPointCount.toLocaleString()}</td>
                       </tr>
@@ -242,26 +234,29 @@ export function SessionsPage() {
             <>
               <div className="card">
                 <div className="card-title">Selected session</div>
-                <ScoreRow label="Session ID" value={shortId(selected.sessionId)} mono />
+                <ScoreRow label="Session ID" value={<CopyableId value={selected.sessionId} />} />
                 <ScoreRow label="Mountain" value={selected.mountainDisplayName} />
                 <ScoreRow label="State" value={selected.pipelineState} badgeClass={selected.pipelineState} />
                 <ScoreRow label="Attribution" value={selected.attributionPrecision} badgeClass={selected.attributionPrecision} />
                 <ScoreRow label="Consent" value={selected.consentVersion ?? '-'} />
+                <ScoreRow label="Raw retention" value={selected.rawRetentionState} />
+                <ScoreRow label="Recomputable" value={selected.recomputable ? 'yes' : 'no'} />
+                <ScoreRow label="Algorithm" value={selected.processedAlgorithmVersion ?? '-'} />
               </div>
 
               <div className="card">
-                <div className="card-title">Session trajectory attribution</div>
+                <div className="card-title">Session edge attribution</div>
                 {detail.status === 'loading' ? (
-                  <EmptyNote>Loading session trajectory attribution.</EmptyNote>
-                ) : detail.trajectories.length === 0 ? (
-                  <EmptyNote>No trajectory attribution is available for this session.</EmptyNote>
+                  <EmptyNote>Loading session edge attribution.</EmptyNote>
+                ) : detail.edges.length === 0 ? (
+                  <EmptyNote>No edge attribution is available for this session.</EmptyNote>
                 ) : (
-                  <TrajectoryList rows={detail.trajectories} />
+                  <EdgeList rows={detail.edges} />
                 )}
               </div>
 
               <div className="card">
-                <div className="card-title">Route matches</div>
+                <div className="card-title">Route-compatible matches</div>
                 {detail.status === 'loading' ? (
                   <EmptyNote>Loading route attribution.</EmptyNote>
                 ) : detail.status === 'error' ? (
@@ -278,7 +273,7 @@ export function SessionsPage() {
                           <span>{formatRouteMatchDiagnostics(route)}</span>
                         </div>
                         <div className="detail-metrics">
-                          <b>{route.cellCount}</b> cells
+                          <b>{route.supportCount}</b> intervals
                           <b>{route.pointCount ?? '-'}</b> points
                         </div>
                       </div>
@@ -288,33 +283,25 @@ export function SessionsPage() {
               </div>
 
               <div className="card">
-                <div className="card-title">Candidate evidence</div>
-                <ScoreRow label="Candidate trajectories" value={selected.candidateCellCount.toLocaleString()} />
+                <div className="card-title">Candidate edge evidence</div>
+                <ScoreRow label="Candidate intervals" value={selected.candidateSupportCount.toLocaleString()} />
                 <ScoreRow
                   label="Candidate points"
                   value={selected.candidatePointCount === null ? 'Historical aggregate only' : selected.candidatePointCount.toLocaleString()}
                 />
-                {selected.attributionPrecision !== 'exact' ? (
-                  <EmptyNote>Cell details are not available for historical aggregate sessions.</EmptyNote>
-                ) : candidateTrajectories.length > 0 ? (
-                  <TrajectoryList rows={candidateTrajectories} />
-                ) : candidateCells.length === 0 ? (
-                  <EmptyNote>No candidate evidence for this session.</EmptyNote>
+                {candidateEdges.length > 0 ? (
+                  <EdgeList rows={candidateEdges} />
                 ) : (
-                  <CellList cells={candidateCells} />
+                  <EmptyNote>No candidate evidence for this session.</EmptyNote>
                 )}
               </div>
 
               <div className="card">
-                <div className="card-title">Route evidence</div>
-                {selected.attributionPrecision !== 'exact' ? (
-                  <EmptyNote>Cell details are not available for historical aggregate sessions.</EmptyNote>
-                ) : routeTrajectories.length > 0 ? (
-                  <TrajectoryList rows={routeTrajectories} />
-                ) : routeCells.length === 0 ? (
-                  <EmptyNote>No route evidence details for this session.</EmptyNote>
+                <div className="card-title">Matched edge evidence</div>
+                {matchedEdges.length > 0 ? (
+                  <EdgeList rows={matchedEdges} />
                 ) : (
-                  <CellList cells={routeCells} />
+                  <EmptyNote>No matched edge details for this session.</EmptyNote>
                 )}
               </div>
             </>
@@ -322,7 +309,7 @@ export function SessionsPage() {
             <div className="card">
               <div className="card-title">Session detail</div>
               <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
-                Click a row to inspect route and candidate trajectory attribution.
+                Click a row to inspect matched edge and candidate edge attribution.
               </p>
             </div>
           )}
@@ -331,7 +318,7 @@ export function SessionsPage() {
             <div className="card-title">Privacy boundary</div>
             <div className="check-item"><span className="check-dot">OK</span>Raw traces protected</div>
             <div className="check-item"><span className="check-dot">OK</span>No coordinates in session detail</div>
-            <div className="check-item"><span className="check-dot">OK</span>Aggregate trajectory support only</div>
+            <div className="check-item"><span className="check-dot">OK</span>Aggregate graph edge support only</div>
           </div>
         </div>
       </div>
@@ -363,7 +350,7 @@ function ScoreRow({
   badgeClass,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   mono?: boolean;
   badgeClass?: string;
 }) {
@@ -385,35 +372,19 @@ function EmptyNote({ children }: { children: string }) {
   return <p style={{ fontSize: 13, color: 'var(--text-3)' }}>{children}</p>;
 }
 
-function CellList({ cells }: { cells: OperatorSessionCellAttribution[] }) {
-  return (
-    <div className="cell-key-list">
-      {cells.slice(0, 12).map((cell) => (
-        <div className="cell-key-item" key={`${cell.targetKind}-${cell.routeId ?? 'candidate'}-${cell.cellKey}`}>
-          <span className="cell-mono">{cell.cellKey}</span>
-          <b>{cell.pointCount}</b>
-        </div>
-      ))}
-      {cells.length > 12 && (
-        <div className="cell-key-more">+{cells.length - 12} more cells</div>
-      )}
-    </div>
-  );
-}
-
-function TrajectoryList({ rows }: { rows: OperatorSessionTrajectoryAttribution[] }) {
+function EdgeList({ rows }: { rows: OperatorSessionEdgeAttribution[] }) {
   return (
     <div className="detail-list">
       {rows.map((row) => (
-        <div className="detail-item" key={`${row.targetKind}-${row.routeId ?? row.candidateTrajectoryId}`}>
+        <div className="detail-item" key={`${row.intervalIndex}-${row.edgeId ?? row.candidateEdgeId}`}>
           <div>
-            <strong>{row.targetKind === 'route' ? row.routeDisplayName ?? row.routeId : 'Candidate trajectory'}</strong>
+            <strong>{row.targetKind === 'edge' ? row.routeDisplayName ?? row.edgeId : `Candidate ${row.residualKind}`}</strong>
             <span>{row.algorithmVersion}</span>
-            <span>{formatTrajectoryDiagnostics(row)}</span>
+            <span>{formatEdgeDiagnostics(row)}</span>
           </div>
           <div className="detail-metrics">
             <b>{row.pointCount.toLocaleString()}</b> points
-            <b>{formatMeters(row.matchedLengthMeters ?? row.residualLengthMeters)}</b>
+            <b>{formatMeters(row.matchedLengthMeters)}</b>
           </div>
         </div>
       ))}
@@ -421,7 +392,7 @@ function TrajectoryList({ rows }: { rows: OperatorSessionTrajectoryAttribution[]
   );
 }
 
-function formatCellsAndPoints(cells: number, points: number | null): string {
+function formatSupportAndPoints(cells: number, points: number | null): string {
   return points === null
     ? `${cells.toLocaleString()} / -`
     : `${cells.toLocaleString()} / ${points.toLocaleString()}`;
@@ -441,18 +412,11 @@ function formatRouteMatchDiagnostics(route: OperatorSessionRouteAttribution): st
   return parts.join(' / ');
 }
 
-function shortId(value: string): string {
-  return value.length > 13 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
-}
-
-function formatTrajectoryDiagnostics(row: OperatorSessionTrajectoryAttribution): string {
-  const parts: string[] = [row.targetKind];
-  if (row.frechetDistance !== null) {
-    parts.push(`${Math.round(row.frechetDistance)}m Frechet`);
-  }
-  if (row.overlapRatio !== null) {
-    parts.push(`${Math.round(row.overlapRatio * 100)}% overlap`);
-  }
+function formatEdgeDiagnostics(row: OperatorSessionEdgeAttribution): string {
+  const parts: string[] = [`#${row.intervalIndex}`, row.targetKind, row.direction];
+  if (row.residualKind) parts.push(row.residualKind);
+  if (row.rawRetentionState === 'purged') parts.push('raw purged');
+  if (!row.recomputable) parts.push('not recomputable');
   return parts.join(' / ');
 }
 

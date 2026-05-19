@@ -1,5 +1,5 @@
 import { type Mountain } from './readModels';
-import { supabase } from './supabaseClient';
+import { invokeOperatorApi } from './operatorApiClient';
 
 type MountainRow = {
   id: string;
@@ -8,18 +8,7 @@ type MountainRow = {
 };
 
 export async function fetchMountains(): Promise<Mountain[]> {
-  if (supabase === null) {
-    return [];
-  }
-
-  const { data, error } = await supabase
-    .from('mountains')
-    .select('id, display_name, bbox')
-    .order('display_name');
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  const data = await invokeOperatorApi<MountainRow[]>('mountains');
 
   return ((data ?? []) as MountainRow[]).map((row) => ({
     id: row.id,
@@ -32,18 +21,7 @@ export async function updateMountainBbox(
   id: string,
   bbox: string | null,
 ): Promise<void> {
-  if (supabase === null) {
-    throw new Error('Supabase not configured');
-  }
-
-  const { error } = await supabase
-    .from('mountains')
-    .update({ bbox })
-    .eq('id', id);
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  await invokeOperatorApi<null>('updateMountainBbox', { mountainId: id, bbox });
 }
 
 export function parseBbox(

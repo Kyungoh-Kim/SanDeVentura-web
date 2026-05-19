@@ -4,13 +4,15 @@ import {
   type OperatorRouteCoverage,
   type OperatorRouteDetail,
   type OperatorRouteQualityDetail,
-  type OperatorSessionCellAttribution,
   type OperatorSessionIngestion,
   type OperatorSessionRouteAttribution,
-  type OperatorSessionTrajectoryAttribution,
+  type OperatorSessionEdgeAttribution,
+  type OperatorTrajectorySegmentMetric,
+  type ResidualKind,
   type RouteState,
+  type TrailEdge,
 } from './readModels';
-import { supabase } from './supabaseClient';
+import { invokeOperatorApi } from './operatorApiClient';
 
 type CoverageRow = {
   route_id: string | null;
@@ -75,6 +77,9 @@ type SessionIngestionRow = {
   candidate_cell_count: number;
   candidate_point_count: number | null;
   attribution_precision: string;
+  processed_algorithm_version: string | null;
+  raw_retention_state: 'available' | 'purged';
+  recomputable: boolean;
 };
 
 type SessionRouteAttributionRow = {
@@ -91,51 +96,77 @@ type SessionRouteAttributionRow = {
   attribution_precision: string;
 };
 
-type SessionCellAttributionRow = {
+type SessionEdgeAttributionRow = {
   session_id: string;
-  target_kind: 'route' | 'candidate';
+  mountain_id: string;
+  interval_index: number;
+  target_kind: 'edge' | 'candidate';
+  edge_id: string | null;
   route_id: string | null;
   route_display_name: string | null;
-  cell_key: string;
-  point_count: number;
-  avg_accuracy: number | null;
-  avg_altitude: number | null;
-  last_seen_at: string | null;
-};
-
-type SessionTrajectoryAttributionRow = {
-  session_id: string;
-  target_kind: 'route' | 'candidate';
-  route_id: string | null;
-  route_display_name: string | null;
-  candidate_trajectory_id: string | null;
+  candidate_edge_id: string | null;
+  residual_kind: ResidualKind | null;
+  direction: 'forward' | 'reverse' | 'unknown';
+  session_start_measure_m: number | null;
+  session_end_measure_m: number | null;
+  edge_start_measure_m: number | null;
+  edge_end_measure_m: number | null;
+  attach_start_edge_id: string | null;
+  attach_start_measure_m: number | null;
+  attach_end_edge_id: string | null;
+  attach_end_measure_m: number | null;
   point_count: number;
   avg_accuracy: number | null;
   avg_altitude: number | null;
   matched_length_m: number | null;
-  residual_length_m: number | null;
-  frechet_distance: number | null;
-  overlap_ratio: number | null;
   algorithm_version: string;
   matched_at: string;
+  raw_retention_state: 'available' | 'purged';
+  recomputable: boolean;
+};
+
+type TrajectorySegmentMetricRow = {
+  mountain_id: string;
+  target_kind: 'edge' | 'candidate';
+  target_id: string;
+  route_id: string | null;
+  edge_id: string | null;
+  candidate_edge_id: string | null;
+  direction: 'forward' | 'reverse';
+  segment_index: number;
+  start_measure_m: number;
+  end_measure_m: number;
+  session_count: number;
+  sample_count: number;
+  duration_seconds_avg: number | null;
+  duration_seconds_sum: number;
+  duration_observation_count: number;
+  speed_mps_avg: number | null;
+  elevation_gain_m: number;
+  elevation_loss_m: number;
+  abrupt_altitude_change_count: number;
+  max_abs_altitude_delta_m: number | null;
+  latest_evidence_at: string | null;
+  algorithm_version: string;
+  updated_at: string;
+};
+
+type TrailEdgeRow = {
+  id: string;
+  mountain_id: string;
+  route_id: string | null;
+  trail_geojson: unknown;
+  length_m: number | null;
+  session_count: number;
+  point_count: number;
+  confidence: number | null;
+  status: TrailEdge['status'];
+  algorithm_version: string;
 };
 
 export async function fetchOperatorSummary(): Promise<OperatorOverviewMetrics | null> {
-  if (supabase === null) {
-    return null;
-  }
+  const row = await invokeOperatorApi<SummaryRow | null>('operatorSummary');
 
-  const { data, error } = await supabase
-    .from('operator_quality_summary')
-    .select('upload_success_rate, queued_uploads, route_coverage, snap_requests, trail_served')
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  const row = data as SummaryRow | null;
   if (row === null) return null;
 
   return {
@@ -148,39 +179,13 @@ export async function fetchOperatorSummary(): Promise<OperatorOverviewMetrics | 
 }
 
 export async function fetchRouteCoverage(): Promise<OperatorRouteCoverage[]> {
-  if (supabase === null) {
-    return [];
-  }
-
-  const { data, error } = await supabase
-    .from('operator_route_coverage')
-    .select(
-      'route_id, mountain_id, mountain_display_name, route_display_name, route_state, confidence, version, session_count, branch_ambiguity_score, gps_quality_score, updated_at',
-    )
-    .order('mountain_id');
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  const data = await invokeOperatorApi<CoverageRow[]>('routeCoverage');
 
   return ((data ?? []) as CoverageRow[]).map(coverageFromRow);
 }
 
 export async function fetchRouteQualityDetails(): Promise<OperatorRouteQualityDetail[]> {
-  if (supabase === null) {
-    return [];
-  }
-
-  const { data, error } = await supabase
-    .from('operator_route_quality_detail')
-    .select(
-      'route_id, mountain_id, mountain_display_name, route_display_name, route_state, confidence, version, session_count, branch_ambiguity_score, gps_quality_score, accepted_point_count, rejected_point_count, latest_evidence_at, updated_at',
-    )
-    .order('mountain_id');
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  const data = await invokeOperatorApi<QualityDetailRow[]>('routeQualityDetails');
 
   return ((data ?? []) as QualityDetailRow[]).map((row) => ({
     ...coverageFromRow(row),
@@ -194,19 +199,7 @@ export async function fetchRouteQualityDetails(): Promise<OperatorRouteQualityDe
 export async function fetchRouteDetail(
   routeId: string,
 ): Promise<OperatorRouteDetail | null> {
-  if (supabase === null) {
-    return null;
-  }
-
-  const { data, error } = await supabase.rpc('latest_canonical_trail', {
-    p_route_id: routeId,
-  });
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  const row = ((data ?? []) as LatestTrailRow[])[0];
+  const row = await invokeOperatorApi<LatestTrailRow | null>('routeDetail', { routeId });
   if (!row) return null;
 
   return {
@@ -228,37 +221,32 @@ export async function fetchRouteDetail(
 export async function fetchMountainRouteDetails(
   mountainId: string,
 ): Promise<OperatorRouteDetail[]> {
-  if (supabase === null) return [];
-
-  const { data, error } = await supabase
-    .from('operator_route_coverage')
-    .select('route_id')
-    .eq('mountain_id', mountainId)
-    .not('route_id', 'is', null);
-
-  if (error) throw new Error(error.message);
-
-  const routeIds = ((data ?? []) as Array<{ route_id: string }>).map((r) => r.route_id);
+  const coverage = await fetchRouteCoverage();
+  const routeIds = coverage
+    .filter((route) => route.mountainId === mountainId && route.routeId !== null)
+    .map((route) => route.routeId as string);
   const details = await Promise.all(routeIds.map((id) => fetchRouteDetail(id)));
   return details.filter((d): d is OperatorRouteDetail => d !== null);
 }
 
+export async function fetchTrailEdgesForMountain(mountainId: string): Promise<TrailEdge[]> {
+  const data = await invokeOperatorApi<TrailEdgeRow[]>('trailEdgesForMountain', { mountainId });
+  return ((data ?? []) as TrailEdgeRow[]).map((row) => ({
+    id: row.id,
+    mountainId: row.mountain_id,
+    routeId: row.route_id,
+    trailGeoJson: parseLineString(row.trail_geojson),
+    lengthMeters: row.length_m,
+    sessionCount: row.session_count,
+    pointCount: row.point_count,
+    confidence: row.confidence,
+    status: row.status,
+    algorithmVersion: row.algorithm_version,
+  }));
+}
+
 export async function fetchSessionIngestion(): Promise<OperatorSessionIngestion[] | null> {
-  if (supabase === null) {
-    return null;
-  }
-
-  const { data, error } = await supabase
-    .from('operator_session_ingestion')
-    .select(
-      'session_id, mountain_id, mountain_display_name, route_id, started_at, ended_at, created_at, pipeline_state, upload_state, consent_version, accepted_point_count, rejected_point_count, last_error, matched_route_count, matched_route_cell_count, matched_route_point_count, candidate_cell_count, candidate_point_count, attribution_precision',
-    )
-    .order('started_at', { ascending: false })
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    return null;
-  }
+  const data = await invokeOperatorApi<SessionIngestionRow[]>('sessionIngestion');
 
   return ((data ?? []) as SessionIngestionRow[]).map((row) => ({
     sessionId: row.session_id,
@@ -275,34 +263,30 @@ export async function fetchSessionIngestion(): Promise<OperatorSessionIngestion[
     rejectedPointCount: row.rejected_point_count,
     lastError: row.last_error,
     matchedRouteCount: row.matched_route_count,
-    matchedRouteCellCount: row.matched_route_cell_count,
+    matchedRouteSupportCount: row.matched_route_cell_count,
     matchedRoutePointCount: row.matched_route_point_count,
-    candidateCellCount: row.candidate_cell_count,
+    candidateSupportCount: row.candidate_cell_count,
     candidatePointCount: row.candidate_point_count,
     attributionPrecision: row.attribution_precision as OperatorSessionIngestion['attributionPrecision'],
+    processedAlgorithmVersion: row.processed_algorithm_version,
+    rawRetentionState: row.raw_retention_state,
+    recomputable: row.recomputable,
   }));
 }
 
 export async function fetchSessionRouteAttribution(
   sessionId: string,
 ): Promise<OperatorSessionRouteAttribution[]> {
-  if (supabase === null) return [];
-
-  const { data, error } = await supabase
-    .from('operator_session_route_attribution')
-    .select(
-      'session_id, route_id, route_display_name, cell_count, point_count, transition_count, match_method, frechet_distance, overlap_ratio, score_margin, attribution_precision',
-    )
-    .eq('session_id', sessionId)
-    .order('route_id');
-
-  if (error) throw new Error(error.message);
+  const data = await invokeOperatorApi<SessionRouteAttributionRow[]>(
+    'sessionRouteAttribution',
+    { sessionId },
+  );
 
   return ((data ?? []) as SessionRouteAttributionRow[]).map((row) => ({
     sessionId: row.session_id,
     routeId: row.route_id,
     routeDisplayName: row.route_display_name,
-    cellCount: row.cell_count,
+    supportCount: row.cell_count,
     pointCount: row.point_count,
     transitionCount: row.transition_count,
     matchMethod: row.match_method as OperatorSessionRouteAttribution['matchMethod'],
@@ -313,77 +297,82 @@ export async function fetchSessionRouteAttribution(
   }));
 }
 
-export async function fetchSessionCellAttribution(
+export async function fetchSessionEdgeAttribution(
   sessionId: string,
-): Promise<OperatorSessionCellAttribution[]> {
-  if (supabase === null) return [];
+): Promise<OperatorSessionEdgeAttribution[]> {
+  const data = await invokeOperatorApi<SessionEdgeAttributionRow[]>(
+    'sessionEdgeAttribution',
+    { sessionId },
+  );
 
-  const { data, error } = await supabase
-    .from('operator_session_cell_attribution')
-    .select(
-      'session_id, target_kind, route_id, route_display_name, cell_key, point_count, avg_accuracy, avg_altitude, last_seen_at',
-    )
-    .eq('session_id', sessionId)
-    .order('target_kind')
-    .order('route_id')
-    .order('cell_key');
-
-  if (error) throw new Error(error.message);
-
-  return ((data ?? []) as SessionCellAttributionRow[]).map((row) => ({
+  return ((data ?? []) as SessionEdgeAttributionRow[]).map((row) => ({
     sessionId: row.session_id,
+    mountainId: row.mountain_id,
+    intervalIndex: row.interval_index,
     targetKind: row.target_kind,
+    edgeId: row.edge_id,
     routeId: row.route_id,
     routeDisplayName: row.route_display_name,
-    cellKey: row.cell_key,
-    pointCount: row.point_count,
-    avgAccuracy: row.avg_accuracy,
-    avgAltitude: row.avg_altitude,
-    lastSeenAt: row.last_seen_at,
-  }));
-}
-
-export async function fetchSessionTrajectoryAttribution(
-  sessionId: string,
-): Promise<OperatorSessionTrajectoryAttribution[]> {
-  if (supabase === null) return [];
-
-  const { data, error } = await supabase
-    .from('operator_session_trajectory_attribution')
-    .select(
-      'session_id, target_kind, route_id, route_display_name, candidate_trajectory_id, point_count, avg_accuracy, avg_altitude, matched_length_m, residual_length_m, frechet_distance, overlap_ratio, algorithm_version, matched_at',
-    )
-    .eq('session_id', sessionId)
-    .order('target_kind')
-    .order('route_id');
-
-  if (error) throw new Error(error.message);
-
-  return ((data ?? []) as SessionTrajectoryAttributionRow[]).map((row) => ({
-    sessionId: row.session_id,
-    targetKind: row.target_kind,
-    routeId: row.route_id,
-    routeDisplayName: row.route_display_name,
-    candidateTrajectoryId: row.candidate_trajectory_id,
+    candidateEdgeId: row.candidate_edge_id,
+    residualKind: row.residual_kind,
+    direction: row.direction,
+    sessionStartMeasureMeters: row.session_start_measure_m,
+    sessionEndMeasureMeters: row.session_end_measure_m,
+    edgeStartMeasureMeters: row.edge_start_measure_m,
+    edgeEndMeasureMeters: row.edge_end_measure_m,
+    attachStartEdgeId: row.attach_start_edge_id,
+    attachStartMeasureMeters: row.attach_start_measure_m,
+    attachEndEdgeId: row.attach_end_edge_id,
+    attachEndMeasureMeters: row.attach_end_measure_m,
     pointCount: row.point_count,
     avgAccuracy: row.avg_accuracy,
     avgAltitude: row.avg_altitude,
     matchedLengthMeters: row.matched_length_m,
-    residualLengthMeters: row.residual_length_m,
-    frechetDistance: row.frechet_distance,
-    overlapRatio: row.overlap_ratio,
     algorithmVersion: row.algorithm_version,
     matchedAt: row.matched_at,
+    rawRetentionState: row.raw_retention_state,
+    recomputable: row.recomputable,
+  }));
+}
+
+export async function fetchTrajectorySegmentMetrics(
+  targetKind: 'edge' | 'candidate',
+  targetId: string,
+): Promise<OperatorTrajectorySegmentMetric[]> {
+  const data = await invokeOperatorApi<TrajectorySegmentMetricRow[]>(
+    'trajectorySegmentMetrics',
+    { targetKind, targetId },
+  );
+
+  return ((data ?? []) as TrajectorySegmentMetricRow[]).map((row) => ({
+    mountainId: row.mountain_id,
+    targetKind: row.target_kind,
+    targetId: row.target_id,
+    routeId: row.route_id ?? null,
+    edgeId: row.edge_id,
+    candidateEdgeId: row.candidate_edge_id,
+    direction: row.direction,
+    segmentIndex: row.segment_index,
+    startMeasureMeters: row.start_measure_m,
+    endMeasureMeters: row.end_measure_m,
+    sessionCount: row.session_count,
+    sampleCount: row.sample_count,
+    durationSecondsAvg: row.duration_seconds_avg,
+    durationSecondsSum: row.duration_seconds_sum,
+    durationObservationCount: row.duration_observation_count,
+    speedMetersPerSecondAvg: row.speed_mps_avg,
+    elevationGainMeters: row.elevation_gain_m,
+    elevationLossMeters: row.elevation_loss_m,
+    abruptAltitudeChangeCount: row.abrupt_altitude_change_count,
+    maxAbsAltitudeDeltaMeters: row.max_abs_altitude_delta_m,
+    latestEvidenceAt: row.latest_evidence_at,
+    algorithmVersion: row.algorithm_version,
+    updatedAt: row.updated_at,
   }));
 }
 
 export async function renameRoute(routeId: string, displayName: string): Promise<void> {
-  if (!supabase) throw new Error('Supabase client not configured');
-  const { error } = await supabase
-    .from('routes')
-    .update({ display_name: displayName })
-    .eq('id', routeId);
-  if (error) throw new Error(error.message);
+  await invokeOperatorApi<null>('renameRoute', { routeId, displayName });
 }
 
 function coverageFromRow(row: CoverageRow): OperatorRouteCoverage {
