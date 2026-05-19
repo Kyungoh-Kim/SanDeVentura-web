@@ -1,21 +1,24 @@
 # Migration Notes
 
-## Prefix convention
+The local database history was squashed after the trail graph inference model
+replaced the earlier H3 cell, split-audit, and trajectory comparison pipelines.
+Historical local sample data is not preserved on this branch.
 
-Migration files use a 4-digit zero-padded numeric prefix (e.g. `0012_...`).
-Each prefix must be unique. Supabase applies migrations in alphabetical order.
+Current migration layout:
 
-## Known prefix collision: 0009
+- `0001_enable_extensions.sql` installs required extensions in the `extensions`
+  schema and configures the database search path.
+- `0002_current_schema.sql` is the current baseline schema for sessions,
+  graph edges, candidate edges, attribution, metrics, operator views, RPCs, RLS,
+  and runtime grants.
+- `0003_sample_data.sql` seeds only catalog rows and dense raw upload-stage
+  sample sessions. It uses roughly 5m GPS spacing across multiple trails per
+  mountain, while the matcher is still responsible for producing graph edges,
+  candidates, canonical trails, attribution, metrics, and raw purge state.
 
-Two files share the `0009` prefix:
+Removed migration groups:
 
-- `0009_mountains_bbox.sql` — adds `bbox` column to `mountains` (simple `ALTER TABLE ADD COLUMN`)
-- `0009_schema_routes.sql` — creates the `routes` table and migrates `canonical_trails`, `trail_cells`, `trail_cell_transitions` from `mountain_id` to `route_id`
-
-**Why this is safe**: alphabetical ordering means `0009_mountains_bbox.sql` runs first. It only adds a nullable column and does not conflict with anything in `0009_schema_routes.sql`. Both files have already been applied to production; renaming either would cause Supabase to treat it as a new migration and attempt re-application.
-
-**Decision**: leave both filenames as-is. Document here. Never reuse prefix `0009`.
-
-## Next available prefix
-
-`0014` — prefixes `0012` and `0013` are used by the session-route attribution work (Sprint 9).
+- H3 cell support and candidate cell accumulation.
+- Legacy split/split-audit RPCs.
+- Comparison-era trajectory tables and aggregate trajectory metrics.
+- No-op sample migrations that existed only to preserve historical ordering.

@@ -1,4 +1,0 @@
--- Historical sample data removed.
---
--- Fresh demo data is inserted after the current ingestion, attribution, and
--- raw-retention schema is available. See 0029_fresh_sample_data.sql.
