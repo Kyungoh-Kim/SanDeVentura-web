@@ -1,5 +1,3 @@
-import { cellToLatLng, gridDisk, gridPathCells, latLngToCell } from 'npm:h3-js';
-
 export type RoutePoint = {
   sessionId: string;
   recordedAt: string;
@@ -33,432 +31,113 @@ export type TrajectoryMatchMetrics = {
   score: number;
 };
 
-export type TrailCell = {
-  cellKey: string;
-  lat: number;
-  lon: number;
-  pointCount: number;
-  sessionCount: number;
-  avgAccuracy: number | null;
-  avgAltitude: number | null;
-  lastSeenAt: string;
-  qualityScore: number;
-};
-
-export type TrailTransition = {
-  fromCellKey: string;
-  toCellKey: string;
-  transitionCount: number;
-  sessionCount: number;
-  edgeCost: number;
-};
-
-export type RouteQualityInputs = {
-  acceptedPointCount?: number;
-  rejectedPointCount?: number;
-  latestEvidenceAt?: string | null;
-  now?: Date;
-  sessionCount?: number;
-};
-
-export type CanonicalRoute = {
-  cells: TrailCell[];
-  transitions: TrailTransition[];
-  line: Array<{ lat: number; lon: number }>;
-  cellKeys: string[];
-  confidence: number;
-  confidenceLevel: 'none' | 'reference' | 'recommended';
-  sessionCount: number;
-  branchAmbiguityScore: number;
-  gpsQualityScore: number;
-  transitionConsistencyScore: number;
-  rejectedPointRate: number;
-  recencyScore: number;
-};
-
-type CellSupport = TrailCell & {
-  sessionIds: Set<string>;
-};
-
-type TransitionSupport = TrailTransition & {
-  sessionIds: Set<string>;
-};
-
-type Component = {
-  cells: CellSupport[];
-  transitions: TransitionSupport[];
-  sessionCount: number;
-  score: number;
-};
-
-export type RouteMatchMetrics = {
+export type TrajectorySupportMatch = {
   frechetDistance: number;
-  overlapRatio: number;
+  incomingOverlapRatio: number;
+  targetOverlapRatio: number;
+  supportKind: 'full' | 'partial' | 'none';
   score: number;
 };
 
-export type RouteFitSplit = {
-  routeCells: TrailCell[];
-  candidateCells: TrailCell[];
+export type TrajectorySegmentMetric = {
+  direction: 'forward' | 'reverse';
+  segmentIndex: number;
+  startMeasureMeters: number;
+  endMeasureMeters: number;
+  sampleCount: number;
+  durationSeconds: number | null;
+  durationObservationCount: number;
+  speedMetersPerSecond: number | null;
+  elevationGainMeters: number;
+  elevationLossMeters: number;
+  abruptAltitudeChangeCount: number;
+  maxAbsAltitudeDeltaMeters: number | null;
+  latestEvidenceAt: string | null;
 };
 
-export type CandidateResidualCluster = {
-  cellKeys: Set<string>;
-  sessionCount: number;
-  contributingSessions: string[];
-  cells: TrailCell[];
-  transitions: TrailTransition[];
-  clusterWeight: number;
+export type TrailGraphEdgeInput = {
+  id: string;
+  path: TrajectoryPoint[];
+  status?: string;
 };
 
-export const H3_RESOLUTION = 11;
-const minCellPointCount = 2;
-const minCellSessionCount = 1;
-const minTransitionCount = 1;
-const minTransitionSessionCount = 1;
-const recommendedConfidence = 0.70;
-const recommendedSessionCount = 5;
-const maxRecommendedBranchAmbiguity = 0.30;
-const maxRecommendedRejectedPointRate = 0.30;
-const minRecommendedGpsQuality = 0.70;
-const minRecommendedRecency = 0.50;
-const neighborSupportWeight = 0.35;
-const smoothingClampMeters = 20;
+export type TrailGraphMatchedInterval = {
+  kind: 'matched_edge';
+  edgeId: string;
+  sessionStartIndex: number;
+  sessionEndIndex: number;
+  sessionStartMeasureMeters: number;
+  sessionEndMeasureMeters: number;
+  edgeStartMeasureMeters: number;
+  edgeEndMeasureMeters: number;
+  direction: 'forward' | 'reverse';
+  lengthMeters: number;
+  pointCount: number;
+};
 
-export function inferCanonicalRoute(
-  points: RoutePoint[],
-  inputs: RouteQualityInputs = {},
-): CanonicalRoute {
-  if (points.length === 0) {
-    return emptyRoute();
-  }
+export type TrailGraphResidualKind = 'branch_out' | 'branch_in' | 'connector' | 'standalone';
 
-  const sessions = groupBySession(points);
-  const rawCells = buildCells(sessions);
-  const rawTransitions = buildTransitions(sessions);
-  const supportedCells = new Map(
-    [...rawCells.values()]
-      .filter((cell) =>
-        cell.pointCount >= minCellPointCount &&
-        cell.sessionCount >= minCellSessionCount
-      )
-      .map((cell) => [cell.cellKey, cell]),
-  );
-  const supportedTransitions = [...rawTransitions.values()].filter((transition) =>
-    supportedCells.has(transition.fromCellKey) &&
-    supportedCells.has(transition.toCellKey) &&
-    transition.transitionCount >= minTransitionCount &&
-    transition.sessionCount >= minTransitionSessionCount
-  );
+export type TrailGraphResidualInterval = {
+  kind: 'candidate_edge';
+  sessionStartIndex: number;
+  sessionEndIndex: number;
+  sessionStartMeasureMeters: number;
+  sessionEndMeasureMeters: number;
+  attachStartEdgeId: string | null;
+  attachStartMeasureMeters: number | null;
+  attachEndEdgeId: string | null;
+  attachEndMeasureMeters: number | null;
+  residualKind: TrailGraphResidualKind;
+  lengthMeters: number;
+  pointCount: number;
+};
 
-  const cells = pruneIsolatedCells(supportedCells, supportedTransitions);
-  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
-  const transitions = supportedTransitions.filter((transition) =>
-    cellByKey.has(transition.fromCellKey) && cellByKey.has(transition.toCellKey)
-  );
+export type TrailGraphTransition = {
+  fromEdgeId: string | null;
+  toEdgeId: string | null;
+  nodeMeasureMeters: number | null;
+  direction: 'forward' | 'reverse' | 'unknown';
+};
 
-  const component = selectBestComponent(cells, transitions);
-  if (component === null) {
-    return routeFromScores({
-      cells,
-      transitions,
-      line: [],
-      cellKeys: [],
-      confidence: 0,
-      confidenceLevel: 'none',
-      sessionCount: sessions.size,
-      branchAmbiguityScore: 0,
-      gpsQualityScore: scoreGpsQuality(cells),
-      transitionConsistencyScore: 0,
-      rejectedPointRate: rejectedPointRate(points.length, inputs),
-      recencyScore: recencyScore(latestEvidenceAt(points, inputs), inputs.now),
-    });
-  }
+export type TrailGraphInterval =
+  | TrailGraphMatchedInterval
+  | TrailGraphResidualInterval;
 
-  const selected = selectPath(component);
-  const pathCells = selected.cellKeys
-    .map((cellKey) => cellByKey.get(cellKey))
-    .filter((cell): cell is CellSupport => cell !== undefined)
-    .map(publicCell);
-  const supportMap = new Map(component.cells.map((cell) => [cell.cellKey, publicCell(cell)]));
-  const line = smoothCanonicalLine(pathCells, supportMap);
+export type TrailGraphMatchResult = {
+  intervals: TrailGraphInterval[];
+  transitions: TrailGraphTransition[];
+};
 
-  if (line.length < 2) {
-    return routeFromScores({
-      cells,
-      transitions,
-      line: [],
-      cellKeys: [],
-      confidence: 0,
-      confidenceLevel: 'none',
-      sessionCount: sessions.size,
-      branchAmbiguityScore: 0,
-      gpsQualityScore: scoreGpsQuality(cells),
-      transitionConsistencyScore: 0,
-      rejectedPointRate: rejectedPointRate(points.length, inputs),
-      recencyScore: recencyScore(latestEvidenceAt(points, inputs), inputs.now),
-    });
-  }
+export type TrailGraphMatchConfig = {
+  maxDistanceMeters: number;
+  minMatchedLengthMeters: number;
+  minResidualLengthMeters: number;
+  minIntervalPoints: number;
+  backtrackToleranceMeters: number;
+  minAttachMatchedLengthMeters: number;
+  minDivergenceAngleDegrees: number;
+  minSeparationRatio: number;
+  directionSampleMeters: number;
+};
 
-  const branchAmbiguityScore = branchAmbiguity(component.transitions);
-  const gpsQualityScore = scoreGpsQuality(component.cells);
-  const transitionConsistencyScore = transitionConsistency(
-    component.transitions,
-    selected.edgeKeys,
-  );
-  const rejectedRate = rejectedPointRate(points.length, inputs);
-  const recency = recencyScore(latestEvidenceAt(points, inputs), inputs.now);
-  const sessionSupportScore = Math.min(1, component.sessionCount / recommendedSessionCount);
-  const confidence = clamp(
-    sessionSupportScore * 0.35 +
-      gpsQualityScore * 0.20 +
-      transitionConsistencyScore * 0.15 +
-      (1 - branchAmbiguityScore) * 0.15 +
-      (1 - rejectedRate) * 0.10 +
-      recency * 0.05,
-  );
-
-  return routeFromScores({
-    cells: component.cells.map(publicCell),
-    transitions: component.transitions.map(publicTransition),
-    line,
-    cellKeys: selected.cellKeys,
-    confidence,
-    confidenceLevel: isRecommended({
-      confidence,
-      sessionCount: component.sessionCount,
-      branchAmbiguityScore,
-      gpsQualityScore,
-      rejectedPointRate: rejectedRate,
-      recencyScore: recency,
-    })
-      ? 'recommended'
-      : 'reference',
-    sessionCount: component.sessionCount,
-    branchAmbiguityScore,
-    gpsQualityScore,
-    transitionConsistencyScore,
-    rejectedPointRate: rejectedRate,
-    recencyScore: recency,
-  });
-}
-
-// Build a single-session hitmap from raw GPS points.
-// Returns public types suitable for accumulation into trail_cells / trail_cell_transitions.
-// Intermediate H3 cells along each GPS segment are filled via gridPathCells so
-// the stored cells represent the full path, not just sampled vertices.
-export function buildSessionHitmap(
-  points: RoutePoint[],
-): { cells: TrailCell[]; transitions: TrailTransition[]; path: TrailCell[] } {
-  if (points.length === 0) {
-    return { cells: [], transitions: [], path: [] };
-  }
-  const expanded = expandWithGridPath(points);
-  const sessions = groupBySession(expanded);
-  const rawCells = buildCells(sessions);
-  const rawTransitions = buildTransitions(sessions);
-  const cells = [...rawCells.values()].map(publicCell);
-  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
-  return {
-    cells,
-    transitions: [...rawTransitions.values()].map(publicTransition),
-    path: buildOrderedCellPath(expanded, cellByKey),
-  };
-}
-
-// Inserts virtual RoutePoints for every H3 cell between consecutive GPS samples.
-// This ensures the hitmap covers the full traversed path, not just measured vertices.
-function expandWithGridPath(points: RoutePoint[]): RoutePoint[] {
-  const bySession = new Map<string, RoutePoint[]>();
-  for (const pt of points) {
-    const list = bySession.get(pt.sessionId) ?? [];
-    list.push(pt);
-    bySession.set(pt.sessionId, list);
-  }
-
-  const result: RoutePoint[] = [];
-  for (const sessionPoints of bySession.values()) {
-    const ordered = [...sessionPoints].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
-    for (let i = 0; i < ordered.length; i++) {
-      result.push(ordered[i]);
-      if (i === ordered.length - 1) continue;
-
-      const cur = ordered[i];
-      const next = ordered[i + 1];
-      const fromKey = pointToCellKey(cur.lat, cur.lon);
-      const toKey = pointToCellKey(next.lat, next.lon);
-      if (fromKey === toKey) continue;
-
-      try {
-        const path = gridPathCells(fromKey, toKey);
-        // Intermediate cells only (first = fromKey, last = toKey — already recorded)
-        for (let j = 1; j < path.length - 1; j++) {
-          const t = j / (path.length - 1);
-          const [lat, lon] = cellToLatLng(path[j]);
-          result.push({
-            sessionId: cur.sessionId,
-            recordedAt: cur.recordedAt,
-            lat,
-            lon,
-            accuracy: cur.accuracy,
-            altitude:
-              cur.altitude !== null && next.altitude !== null
-                ? cur.altitude + (next.altitude - cur.altitude) * t
-                : cur.altitude,
-            sequenceIndex: cur.sequenceIndex + t,
-          });
-        }
-      } catch {
-        // gridPathCells fails for very distant cells (different H3 base cells); skip
-      }
-    }
-  }
-  return result;
-}
-
-// Infer a canonical route from pre-accumulated cells and transitions (e.g. from trail_cells DB table).
-// Use inputs.sessionCount for accurate session count when available;
-// otherwise falls back to the max sessionCount observed across cells.
-export function inferCanonicalRouteFromCells(
-  rawCells: TrailCell[],
-  rawTransitions: TrailTransition[],
-  inputs: RouteQualityInputs = {},
-): CanonicalRoute {
-  if (rawCells.length === 0) {
-    return emptyRoute();
-  }
-
-  const supportedCells = new Map(
-    rawCells
-      .filter((cell) =>
-        cell.pointCount >= minCellPointCount &&
-        cell.sessionCount >= minCellSessionCount
-      )
-      .map((cell) => [cell.cellKey, cellToSupport(cell)]),
-  );
-  const supportedTransitions = rawTransitions
-    .filter((transition) =>
-      supportedCells.has(transition.fromCellKey) &&
-      supportedCells.has(transition.toCellKey) &&
-      transition.transitionCount >= minTransitionCount &&
-      transition.sessionCount >= minTransitionSessionCount
-    )
-    .map(transitionToSupport);
-
-  const cells = pruneIsolatedCells(supportedCells, supportedTransitions);
-  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
-  const transitions = supportedTransitions.filter((transition) =>
-    cellByKey.has(transition.fromCellKey) && cellByKey.has(transition.toCellKey)
-  );
-
-  // Session count: prefer explicit override (from session_route_assignments count),
-  // fall back to the max cell session count as a conservative estimate.
-  const resolvedSessionCount = inputs.sessionCount ??
-    Math.max(0, ...cells.map((c) => c.sessionCount));
-  const totalPointCount = sum(cells.map((c) => c.pointCount));
-  const latestAt = latestCellAt(rawCells);
-
-  const component = selectBestComponent(cells, transitions);
-  if (component === null) {
-    return routeFromScores({
-      cells: cells.map(publicCell),
-      transitions: transitions.map(publicTransition),
-      line: [],
-      cellKeys: [],
-      confidence: 0,
-      confidenceLevel: 'none',
-      sessionCount: resolvedSessionCount,
-      branchAmbiguityScore: 0,
-      gpsQualityScore: scoreGpsQuality(cells),
-      transitionConsistencyScore: 0,
-      rejectedPointRate: rejectedPointRate(totalPointCount, inputs),
-      recencyScore: recencyScore(latestAt, inputs.now),
-    });
-  }
-
-  const selected = selectPath(component);
-  const pathCells = selected.cellKeys
-    .map((cellKey) => cellByKey.get(cellKey))
-    .filter((cell): cell is CellSupport => cell !== undefined)
-    .map(publicCell);
-  const supportMap = new Map(component.cells.map((cell) => [cell.cellKey, publicCell(cell)]));
-  const line = smoothCanonicalLine(pathCells, supportMap);
-
-  if (line.length < 2) {
-    return routeFromScores({
-      cells: cells.map(publicCell),
-      transitions: transitions.map(publicTransition),
-      line: [],
-      cellKeys: [],
-      confidence: 0,
-      confidenceLevel: 'none',
-      sessionCount: resolvedSessionCount,
-      branchAmbiguityScore: 0,
-      gpsQualityScore: scoreGpsQuality(cells),
-      transitionConsistencyScore: 0,
-      rejectedPointRate: rejectedPointRate(totalPointCount, inputs),
-      recencyScore: recencyScore(latestAt, inputs.now),
-    });
-  }
-
-  const branchAmbiguityScore = branchAmbiguity(component.transitions);
-  const gpsQualityScore = scoreGpsQuality(component.cells);
-  const transitionConsistencyScore = transitionConsistency(
-    component.transitions,
-    selected.edgeKeys,
-  );
-  const rejectedRate = rejectedPointRate(totalPointCount, inputs);
-  const recency = recencyScore(latestAt, inputs.now);
-  const sessionSupportScore = Math.min(1, resolvedSessionCount / recommendedSessionCount);
-  const confidence = clamp(
-    sessionSupportScore * 0.35 +
-      gpsQualityScore * 0.20 +
-      transitionConsistencyScore * 0.15 +
-      (1 - branchAmbiguityScore) * 0.15 +
-      (1 - rejectedRate) * 0.10 +
-      recency * 0.05,
-  );
-
-  return routeFromScores({
-    cells: component.cells.map(publicCell),
-    transitions: component.transitions.map(publicTransition),
-    line,
-    cellKeys: selected.cellKeys,
-    confidence,
-    confidenceLevel: isRecommended({
-      confidence,
-      sessionCount: resolvedSessionCount,
-      branchAmbiguityScore,
-      gpsQualityScore,
-      rejectedPointRate: rejectedRate,
-      recencyScore: recency,
-    })
-      ? 'recommended'
-      : 'reference',
-    sessionCount: resolvedSessionCount,
-    branchAmbiguityScore,
-    gpsQualityScore,
-    transitionConsistencyScore,
-    rejectedPointRate: rejectedRate,
-    recencyScore: recency,
-  });
-}
-
-export function lineStringWkt(line: Array<{ lat: number; lon: number }>): string | null {
-  if (line.length < 2) {
-    return null;
-  }
-  return `LINESTRING(${line.map((point) => `${point.lon} ${point.lat}`).join(',')})`;
-}
+export const defaultTrailGraphMatchConfig: TrailGraphMatchConfig = {
+  maxDistanceMeters: 35,
+  minMatchedLengthMeters: 40,
+  minResidualLengthMeters: 40,
+  minIntervalPoints: 3,
+  backtrackToleranceMeters: 35,
+  minAttachMatchedLengthMeters: 40,
+  minDivergenceAngleDegrees: 25,
+  minSeparationRatio: 0.6,
+  directionSampleMeters: 60,
+};
 
 export function refineSessionTrajectory(points: RoutePoint[]): RefinedTrajectory {
   const ordered = [...points]
     .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lon))
     .sort((left, right) => left.sequenceIndex - right.sequenceIndex);
 
-  if (ordered.length === 0) {
-    return emptyTrajectory();
-  }
+  if (ordered.length === 0) return emptyTrajectory();
 
   const deduped: RoutePoint[] = [];
   for (const point of ordered) {
@@ -490,6 +169,11 @@ export function refineSessionTrajectory(points: RoutePoint[]): RefinedTrajectory
       .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null,
     lengthMeters: trajectoryLengthMeters(resampled),
   };
+}
+
+export function lineStringWkt(line: Array<{ lat: number; lon: number }>): string | null {
+  if (line.length < 2) return null;
+  return `LINESTRING(${line.map((point) => `${point.lon} ${point.lat}`).join(',')})`;
 }
 
 export function trajectoryLineWkt(trajectory: RefinedTrajectory | TrajectoryPoint[]): string | null {
@@ -540,6 +224,45 @@ export function weightedDiscreteFrechetTrajectory(
   };
 }
 
+export function trajectorySupportMatch(
+  incomingPath: TrajectoryPoint[],
+  targetPath: TrajectoryPoint[],
+  thresholdMeters = 45,
+): TrajectorySupportMatch {
+  if (incomingPath.length === 0 || targetPath.length === 0) {
+    return {
+      frechetDistance: Number.POSITIVE_INFINITY,
+      incomingOverlapRatio: 0,
+      targetOverlapRatio: 0,
+      supportKind: 'none',
+      score: Number.POSITIVE_INFINITY,
+    };
+  }
+
+  const forward = weightedDiscreteFrechetTrajectory(incomingPath, targetPath);
+  const reverse = weightedDiscreteFrechetTrajectory(incomingPath, [...targetPath].reverse());
+  const frechetDistance = Math.min(forward.frechetDistance, reverse.frechetDistance);
+  const incomingOverlapRatio = trajectoryOverlapRatio(incomingPath, targetPath, thresholdMeters);
+  const targetOverlapRatio = trajectoryOverlapRatio(targetPath, incomingPath, thresholdMeters);
+  const fullSupport = frechetDistance <= thresholdMeters &&
+    incomingOverlapRatio >= 0.45 &&
+    targetOverlapRatio >= 0.45;
+  const partialSupport = !fullSupport && (
+    incomingOverlapRatio >= 0.80 && targetOverlapRatio >= 0.25 ||
+    targetOverlapRatio >= 0.80 && incomingOverlapRatio >= 0.25
+  );
+  const supportKind = fullSupport ? 'full' : partialSupport ? 'partial' : 'none';
+
+  return {
+    frechetDistance,
+    incomingOverlapRatio,
+    targetOverlapRatio,
+    supportKind,
+    score: frechetDistance - (incomingOverlapRatio + targetOverlapRatio) * 20 +
+      (supportKind === 'full' ? 0 : supportKind === 'partial' ? 100 : 1000),
+  };
+}
+
 export function mergeTrajectoryLines(
   existing: TrajectoryPoint[],
   incoming: TrajectoryPoint[],
@@ -587,672 +310,577 @@ export function trajectoryOverlapRatio(
   return matched / sessionPath.length;
 }
 
-export function weightedDiscreteFrechet(
-  sessionPath: TrailCell[],
-  routePath: TrailCell[],
-  supportMap: Map<string, TrailCell> = new Map(),
-): RouteMatchMetrics {
-  if (sessionPath.length === 0 || routePath.length === 0) {
-    return { frechetDistance: Number.POSITIVE_INFINITY, overlapRatio: 0, score: Number.POSITIVE_INFINITY };
+export function buildTrajectorySegmentMetrics(
+  trajectory: RefinedTrajectory | TrajectoryPoint[],
+  bucketMeters = 100,
+  referencePath?: TrajectoryPoint[],
+): TrajectorySegmentMetric[] {
+  const points = Array.isArray(trajectory) ? trajectory : trajectory.points;
+  if (points.length < 2 || bucketMeters <= 0) return [];
+  const reference = referencePath && referencePath.length >= 2 ? referencePath : points;
+
+  const buckets = new Map<string, {
+    direction: 'forward' | 'reverse';
+    segmentIndex: number;
+    startMeasureMeters: number;
+    endMeasureMeters: number;
+    sampleCount: number;
+    distanceMeters: number;
+    durationSeconds: number;
+    elevationGainMeters: number;
+    elevationLossMeters: number;
+    abruptAltitudeChangeCount: number;
+    maxAbsAltitudeDeltaMeters: number | null;
+    latestEvidenceAt: string | null;
+  }>();
+
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const segmentDistance = haversineMeters(previous.lat, previous.lon, current.lat, current.lon);
+    if (segmentDistance <= 0) continue;
+
+    const previousMeasure = projectMeasureOnLine(previous, reference);
+    const currentMeasure = projectMeasureOnLine(current, reference);
+    const measureDelta = currentMeasure - previousMeasure;
+    if (!Number.isFinite(measureDelta) || Math.abs(measureDelta) < 1) continue;
+
+    const direction: 'forward' | 'reverse' = measureDelta >= 0 ? 'forward' : 'reverse';
+    const measureStart = Math.min(previousMeasure, currentMeasure);
+    const measureDistance = Math.abs(measureDelta);
+    const startTime = parseOptionalTime(previous.recordedAt);
+    const endTime = parseOptionalTime(current.recordedAt);
+    const segmentDuration = startTime !== null && endTime !== null && endTime >= startTime
+      ? (endTime - startTime) / 1000
+      : null;
+    const altitudeDelta = previous.altitude !== null && previous.altitude !== undefined &&
+        current.altitude !== null && current.altitude !== undefined
+      ? current.altitude - previous.altitude
+      : null;
+    const absAltitudeDelta = altitudeDelta === null ? null : Math.abs(altitudeDelta);
+    const abruptAltitudeChange = absAltitudeDelta !== null &&
+      absAltitudeDelta >= 25 &&
+      absAltitudeDelta / Math.max(1, segmentDistance) >= 0.75;
+
+    let consumedMeasure = 0;
+    while (consumedMeasure < measureDistance) {
+      const absoluteStart = measureStart + consumedMeasure;
+      const bucketIndex = Math.floor(absoluteStart / bucketMeters);
+      const bucketEnd = (bucketIndex + 1) * bucketMeters;
+      const sliceMeasure = Math.min(measureDistance - consumedMeasure, bucketEnd - absoluteStart);
+      const sliceRatio = sliceMeasure / measureDistance;
+      const sliceDistance = segmentDistance * sliceRatio;
+      const bucketKey = `${direction}:${bucketIndex}`;
+      const bucket = buckets.get(bucketKey) ?? {
+        direction,
+        segmentIndex: bucketIndex,
+        startMeasureMeters: bucketIndex * bucketMeters,
+        endMeasureMeters: (bucketIndex + 1) * bucketMeters,
+        sampleCount: 0,
+        distanceMeters: 0,
+        durationSeconds: 0,
+        elevationGainMeters: 0,
+        elevationLossMeters: 0,
+        abruptAltitudeChangeCount: 0,
+        maxAbsAltitudeDeltaMeters: null,
+        latestEvidenceAt: null,
+      };
+
+      bucket.sampleCount += 1;
+      bucket.distanceMeters += sliceDistance;
+      if (segmentDuration !== null) {
+        bucket.durationSeconds += segmentDuration * sliceRatio;
+      }
+
+      if (altitudeDelta !== null) {
+        if (abruptAltitudeChange) {
+          bucket.abruptAltitudeChangeCount += 1;
+        } else if (altitudeDelta > 0) {
+          bucket.elevationGainMeters += altitudeDelta * sliceRatio;
+        } else {
+          bucket.elevationLossMeters += Math.abs(altitudeDelta) * sliceRatio;
+        }
+      }
+
+      if (absAltitudeDelta !== null) {
+        bucket.maxAbsAltitudeDeltaMeters = Math.max(bucket.maxAbsAltitudeDeltaMeters ?? 0, absAltitudeDelta);
+      }
+      bucket.latestEvidenceAt = latestIsoString(bucket.latestEvidenceAt, current.recordedAt ?? null);
+
+      buckets.set(bucketKey, bucket);
+      consumedMeasure += sliceMeasure;
+    }
   }
 
-  const cache: number[][] = Array.from(
-    { length: sessionPath.length },
-    () => Array(routePath.length).fill(Number.NaN),
-  );
-
-  const distanceAt = (i: number, j: number): number => {
-    const routeCell = routePath[j];
-    const support = supportStrengthForCell(supportMap.get(routeCell.cellKey) ?? routeCell);
-    const supportDiscount = 1 + Math.min(0.35, Math.log1p(support) / 20);
-    return haversineMeters(
-      sessionPath[i].lat,
-      sessionPath[i].lon,
-      routeCell.lat,
-      routeCell.lon,
-    ) / supportDiscount;
-  };
-
-  const walk = (i: number, j: number): number => {
-    if (Number.isFinite(cache[i][j])) return cache[i][j];
-    const current = distanceAt(i, j);
-    if (i === 0 && j === 0) {
-      cache[i][j] = current;
-    } else if (i > 0 && j === 0) {
-      cache[i][j] = Math.max(walk(i - 1, 0), current);
-    } else if (i === 0 && j > 0) {
-      cache[i][j] = Math.max(walk(0, j - 1), current);
-    } else {
-      cache[i][j] = Math.max(
-        Math.min(walk(i - 1, j), walk(i - 1, j - 1), walk(i, j - 1)),
-        current,
-      );
-    }
-    return cache[i][j];
-  };
-
-  const frechetDistance = walk(sessionPath.length - 1, routePath.length - 1);
-  const routeKeys = new Set(routePath.map((cell) => cell.cellKey));
-  const overlapCount = sessionPath.filter((cell) => routeKeys.has(cell.cellKey)).length;
-  const overlapRatio = overlapCount / Math.max(1, sessionPath.length);
-
-  return {
-    frechetDistance,
-    overlapRatio,
-    score: frechetDistance - overlapRatio * 20,
-  };
+  return [...buckets.values()]
+    .sort((left, right) =>
+      left.segmentIndex - right.segmentIndex || left.direction.localeCompare(right.direction)
+    )
+    .map((bucket) => ({
+      direction: bucket.direction,
+      segmentIndex: bucket.segmentIndex,
+      startMeasureMeters: bucket.startMeasureMeters,
+      endMeasureMeters: bucket.endMeasureMeters,
+      sampleCount: bucket.sampleCount,
+      durationSeconds: bucket.durationSeconds === 0 ? null : bucket.durationSeconds,
+      durationObservationCount: bucket.durationSeconds === 0 ? 0 : 1,
+      speedMetersPerSecond: bucket.durationSeconds === 0
+        ? null
+        : bucket.distanceMeters / bucket.durationSeconds,
+      elevationGainMeters: bucket.elevationGainMeters,
+      elevationLossMeters: bucket.elevationLossMeters,
+      abruptAltitudeChangeCount: bucket.abruptAltitudeChangeCount,
+      maxAbsAltitudeDeltaMeters: bucket.maxAbsAltitudeDeltaMeters,
+      latestEvidenceAt: bucket.latestEvidenceAt,
+    }));
 }
 
-export function splitSessionByRouteFit(
-  sessionPath: TrailCell[],
-  routePath: TrailCell[],
-  pathMatchAccepted: boolean,
-  routeDistanceMeters = 45,
-): RouteFitSplit {
-  const routeKeys = new Set(routePath.map((cell) => cell.cellKey));
-  const routeCells = new Map<string, TrailCell>();
-  const candidateCells = new Map<string, TrailCell>();
-
-  for (const cell of sessionPath) {
-    if (routeKeys.has(cell.cellKey)) {
-      routeCells.set(cell.cellKey, cell);
-      continue;
-    }
-    if (pathMatchAccepted && nearestDistanceMeters(cell, routePath) <= routeDistanceMeters) {
-      routeCells.set(cell.cellKey, cell);
-      continue;
-    }
-    candidateCells.set(cell.cellKey, cell);
-  }
-
-  return { routeCells: [...routeCells.values()], candidateCells: [...candidateCells.values()] };
-}
-
-export function smoothCanonicalLine(
-  cellPath: TrailCell[],
-  supportMap: Map<string, TrailCell> = new Map(cellPath.map((cell) => [cell.cellKey, cell])),
-): Array<{ lat: number; lon: number }> {
-  if (cellPath.length < 2) {
-    return cellPath.map((cell) => ({ lat: cell.lat, lon: cell.lon }));
-  }
-
-  const weighted = cellPath.map((cell) => {
-    let latSum = cell.lat * supportStrengthForCell(cell);
-    let lonSum = cell.lon * supportStrengthForCell(cell);
-    let weightSum = supportStrengthForCell(cell);
-
-    for (const neighborKey of gridDisk(cell.cellKey, 1)) {
-      if (neighborKey === cell.cellKey) continue;
-      const neighbor = supportMap.get(neighborKey);
-      if (!neighbor) continue;
-      const weight = supportStrengthForCell(neighbor) * neighborSupportWeight;
-      latSum += neighbor.lat * weight;
-      lonSum += neighbor.lon * weight;
-      weightSum += weight;
-    }
-
-    const target = {
-      lat: latSum / Math.max(1, weightSum),
-      lon: lonSum / Math.max(1, weightSum),
+export function matchTrajectoryToTrailGraph(
+  sessionPath: TrajectoryPoint[],
+  edges: TrailGraphEdgeInput[],
+  config: TrailGraphMatchConfig = defaultTrailGraphMatchConfig,
+): TrailGraphMatchResult {
+  const attachableEdges = edges.filter(isAttachableGraphEdge);
+  if (sessionPath.length < 2 || attachableEdges.length === 0) {
+    return {
+      intervals: residualOnlyInterval(sessionPath, config),
+      transitions: [],
     };
-    return clampPointShift(cell, target, smoothingClampMeters);
+  }
+
+  type TaggedPoint = {
+    edgeId: string | null;
+    edgeMeasureMeters: number | null;
+    sessionMeasureMeters: number;
+    distanceMeters: number | null;
+  };
+
+  const sessionMeasures = cumulativeMeasures(sessionPath);
+  const tags: TaggedPoint[] = sessionPath.map((point, index) => {
+    let best: TaggedPoint = {
+      edgeId: null,
+      edgeMeasureMeters: null,
+      sessionMeasureMeters: sessionMeasures[index] ?? 0,
+      distanceMeters: null,
+    };
+
+    for (const edge of attachableEdges) {
+      if (edge.path.length < 2) continue;
+      const distanceMeters = distanceToPolylineMeters(point, edge.path);
+      if (distanceMeters > config.maxDistanceMeters) continue;
+      if (best.distanceMeters !== null && distanceMeters >= best.distanceMeters) continue;
+      best = {
+        edgeId: edge.id,
+        edgeMeasureMeters: projectMeasureOnLine(point, edge.path),
+        sessionMeasureMeters: sessionMeasures[index] ?? 0,
+        distanceMeters,
+      };
+    }
+
+    return best;
   });
 
-  return chaikinOnce(weighted);
-}
+  const raw: Array<{
+    kind: 'matched' | 'residual';
+    edgeId: string | null;
+    start: number;
+    end: number;
+  }> = [];
 
-export function clusterCandidateResiduals(
-  cells: TrailCell[],
-  transitions: TrailTransition[],
-  options: { minClusterSessionCount?: number; minClusterCellCount?: number } = {},
-): CandidateResidualCluster[] {
-  const minClusterSessionCount = options.minClusterSessionCount ?? 2;
-  const minClusterCellCount = options.minClusterCellCount ?? 3;
-  if (cells.length === 0) return [];
+  let start = 0;
+  for (let index = 1; index < tags.length; index += 1) {
+    const prev = tags[index - 1];
+    const current = tags[index];
+    const currentKind = current.edgeId === null ? 'residual' : 'matched';
+    const prevKind = prev.edgeId === null ? 'residual' : 'matched';
+    let shouldSplit = currentKind !== prevKind || current.edgeId !== prev.edgeId;
 
-  const cellMap = new Map(cells.map((cell) => [cell.cellKey, cell]));
-  const visited = new Set<string>();
-  const clusters: CandidateResidualCluster[] = [];
-
-  for (const cell of cells) {
-    if (visited.has(cell.cellKey)) continue;
-    const queue = [cell.cellKey];
-    const keys = new Set<string>();
-
-    while (queue.length > 0) {
-      const key = queue.pop()!;
-      if (visited.has(key)) continue;
-      visited.add(key);
-      keys.add(key);
-      for (const neighbor of gridDisk(key, 1)) {
-        if (neighbor !== key && cellMap.has(neighbor) && !visited.has(neighbor)) {
-          queue.push(neighbor);
-        }
-      }
-      for (const transition of transitions) {
-        if (transition.fromCellKey === key && cellMap.has(transition.toCellKey) && !visited.has(transition.toCellKey)) {
-          queue.push(transition.toCellKey);
-        }
-        if (transition.toCellKey === key && cellMap.has(transition.fromCellKey) && !visited.has(transition.fromCellKey)) {
-          queue.push(transition.fromCellKey);
-        }
+    if (!shouldSplit && current.edgeId !== null && prev.edgeId !== null) {
+      const measureDelta = (current.edgeMeasureMeters ?? 0) - (prev.edgeMeasureMeters ?? 0);
+      const first = tags[start];
+      const baseDelta = (prev.edgeMeasureMeters ?? 0) - (first.edgeMeasureMeters ?? 0);
+      const direction = Math.abs(baseDelta) < 1 ? Math.sign(measureDelta) : Math.sign(baseDelta);
+      if (
+        direction > 0 && measureDelta < -config.backtrackToleranceMeters ||
+        direction < 0 && measureDelta > config.backtrackToleranceMeters
+      ) {
+        shouldSplit = true;
       }
     }
 
-    const clusterCells = [...keys]
-      .map((key) => cellMap.get(key))
-      .filter((value): value is TrailCell => value !== undefined);
-    const contributingSessions = dedupeStrings(
-      clusterCells.flatMap((clusterCell) => (clusterCell as any).contributingSessions ?? []),
-    );
-    const sessionCount = Math.max(
-      contributingSessions.length,
-      ...clusterCells.map((clusterCell) => clusterCell.sessionCount),
-      0,
-    );
-    if (clusterCells.length < minClusterCellCount || sessionCount < minClusterSessionCount) {
-      continue;
+    if (shouldSplit) {
+      raw.push({
+        kind: tags[start].edgeId === null ? 'residual' : 'matched',
+        edgeId: tags[start].edgeId,
+        start,
+        end: index - 1,
+      });
+      start = index;
     }
-
-    const clusterTransitions = transitions.filter((transition) =>
-      keys.has(transition.fromCellKey) && keys.has(transition.toCellKey)
-    );
-    const clusterWeight = sum(clusterCells.map((clusterCell) => clusterCell.pointCount)) +
-      2 * sessionCount;
-
-    clusters.push({
-      cellKeys: keys,
-      sessionCount,
-      contributingSessions,
-      cells: clusterCells,
-      transitions: clusterTransitions,
-      clusterWeight,
-    });
   }
 
-  return clusters;
-}
+  raw.push({
+    kind: tags[start].edgeId === null ? 'residual' : 'matched',
+    edgeId: tags[start].edgeId,
+    start,
+    end: tags.length - 1,
+  });
 
-export function pointToCellKey(lat: number, lon: number): string {
-  return latLngToCell(lat, lon, H3_RESOLUTION);
-}
+  const normalized = raw.map((interval) => {
+    if (interval.kind === 'residual' || interval.edgeId === null) return interval;
+    const startTag = tags[interval.start];
+    const endTag = tags[interval.end];
+    const matchedLength = Math.abs((endTag.edgeMeasureMeters ?? 0) - (startTag.edgeMeasureMeters ?? 0));
+    const pointCount = interval.end - interval.start + 1;
+    if (matchedLength < config.minMatchedLengthMeters || pointCount < config.minIntervalPoints) {
+      return { ...interval, kind: 'residual' as const, edgeId: null };
+    }
+    return interval;
+  });
 
-function buildCells(sessions: Map<string, RoutePoint[]>): Map<string, CellSupport> {
-  const cellStats = new Map<string, {
-    latSum: number;
-    lonSum: number;
-    pointCount: number;
-    sessions: Set<string>;
-    accuracySum: number;
-    accuracyCount: number;
-    altitudeSum: number;
-    altitudeCount: number;
-    lastSeenAt: string;
-  }>();
+  const merged: typeof normalized = [];
+  for (const interval of normalized) {
+    const previous = merged[merged.length - 1];
+    if (previous && previous.kind === interval.kind && previous.edgeId === interval.edgeId) {
+      previous.end = interval.end;
+    } else {
+      merged.push({ ...interval });
+    }
+  }
 
-  for (const [sessionId, sessionPoints] of sessions) {
-    for (const point of sessionPoints) {
-      const cellKey = pointToCellKey(point.lat, point.lon);
-      const stats = cellStats.get(cellKey) ?? {
-        latSum: 0,
-        lonSum: 0,
-        pointCount: 0,
-        sessions: new Set<string>(),
-        accuracySum: 0,
-        accuracyCount: 0,
-        altitudeSum: 0,
-        altitudeCount: 0,
-        lastSeenAt: point.recordedAt,
-      };
-      stats.latSum += point.lat;
-      stats.lonSum += point.lon;
-      stats.pointCount += 1;
-      stats.sessions.add(sessionId);
-      if (point.accuracy !== null) {
-        stats.accuracySum += point.accuracy;
-        stats.accuracyCount += 1;
+  const intervals: TrailGraphInterval[] = [];
+  for (let index = 0; index < merged.length; index += 1) {
+    const interval = merged[index];
+    if (interval.kind === 'matched' && interval.edgeId !== null) {
+      const startTag = tags[interval.start];
+      const endTag = tags[interval.end];
+      const edgeStartMeasureMeters = startTag.edgeMeasureMeters ?? 0;
+      const edgeEndMeasureMeters = endTag.edgeMeasureMeters ?? edgeStartMeasureMeters;
+      intervals.push({
+        kind: 'matched_edge',
+        edgeId: interval.edgeId,
+        sessionStartIndex: interval.start,
+        sessionEndIndex: interval.end,
+        sessionStartMeasureMeters: startTag.sessionMeasureMeters,
+        sessionEndMeasureMeters: endTag.sessionMeasureMeters,
+        edgeStartMeasureMeters,
+        edgeEndMeasureMeters,
+        direction: edgeEndMeasureMeters >= edgeStartMeasureMeters ? 'forward' : 'reverse',
+        lengthMeters: Math.abs(edgeEndMeasureMeters - edgeStartMeasureMeters),
+        pointCount: interval.end - interval.start + 1,
+      });
+    } else {
+      const startTag = tags[interval.start];
+      const endTag = tags[interval.end];
+      const previous = findAdjacentMatchedInterval(merged, tags, index, -1);
+      const next = findAdjacentMatchedInterval(merged, tags, index, 1);
+      const validatedAttach = validatedResidualAttach(
+        sessionPath,
+        interval.start,
+        interval.end,
+        attachableEdges,
+        previous,
+        next,
+        config,
+      );
+      const lengthMeters = endTag.sessionMeasureMeters - startTag.sessionMeasureMeters;
+      if (lengthMeters < config.minResidualLengthMeters && interval.end - interval.start + 1 < config.minIntervalPoints) {
+        continue;
       }
-      if (point.altitude !== null) {
-        stats.altitudeSum += point.altitude;
-        stats.altitudeCount += 1;
-      }
-      if (Date.parse(point.recordedAt) > Date.parse(stats.lastSeenAt)) {
-        stats.lastSeenAt = point.recordedAt;
-      }
-      cellStats.set(cellKey, stats);
+      intervals.push({
+        kind: 'candidate_edge',
+        sessionStartIndex: interval.start,
+        sessionEndIndex: interval.end,
+        sessionStartMeasureMeters: startTag.sessionMeasureMeters,
+        sessionEndMeasureMeters: endTag.sessionMeasureMeters,
+        attachStartEdgeId: validatedAttach.start?.edgeId ?? null,
+        attachStartMeasureMeters: validatedAttach.start?.measureMeters ?? null,
+        attachEndEdgeId: validatedAttach.end?.edgeId ?? null,
+        attachEndMeasureMeters: validatedAttach.end?.measureMeters ?? null,
+        residualKind: residualKind(validatedAttach.start?.edgeId ?? null, validatedAttach.end?.edgeId ?? null),
+        lengthMeters,
+        pointCount: interval.end - interval.start + 1,
+      });
     }
   }
 
-  return new Map([...cellStats.entries()].map(([cellKey, stats]) => {
-    const avgAccuracy = stats.accuracyCount === 0
-      ? null
-      : stats.accuracySum / stats.accuracyCount;
-    return [cellKey, {
-      cellKey,
-      lat: stats.latSum / stats.pointCount,
-      lon: stats.lonSum / stats.pointCount,
-      pointCount: stats.pointCount,
-      sessionCount: stats.sessions.size,
-      avgAccuracy,
-      avgAltitude: stats.altitudeCount === 0
-        ? null
-        : stats.altitudeSum / stats.altitudeCount,
-      lastSeenAt: stats.lastSeenAt,
-      qualityScore: qualityScore(avgAccuracy),
-      sessionIds: stats.sessions,
-    }];
-  }));
-}
-
-function buildTransitions(sessions: Map<string, RoutePoint[]>): Map<string, TransitionSupport> {
-  const transitionStats = new Map<string, {
-    fromCellKey: string;
-    toCellKey: string;
-    transitionCount: number;
-    sessions: Set<string>;
-  }>();
-
-  for (const [sessionId, sessionPoints] of sessions) {
-    const ordered = [...sessionPoints].sort((left, right) =>
-      left.sequenceIndex - right.sequenceIndex
-    );
-    let previousCell: string | null = null;
-    for (const point of ordered) {
-      const cellKey = pointToCellKey(point.lat, point.lon);
-      if (previousCell !== null && previousCell !== cellKey) {
-        const transitionKey = `${previousCell}->${cellKey}`;
-        const transition = transitionStats.get(transitionKey) ?? {
-          fromCellKey: previousCell,
-          toCellKey: cellKey,
-          transitionCount: 0,
-          sessions: new Set<string>(),
-        };
-        transition.transitionCount += 1;
-        transition.sessions.add(sessionId);
-        transitionStats.set(transitionKey, transition);
-      }
-      previousCell = cellKey;
-    }
-  }
-
-  return new Map([...transitionStats.entries()].map(([key, transition]) => [
-    key,
-    {
-      fromCellKey: transition.fromCellKey,
-      toCellKey: transition.toCellKey,
-      transitionCount: transition.transitionCount,
-      sessionCount: transition.sessions.size,
-      edgeCost: 1 / Math.max(1, transition.transitionCount),
-      sessionIds: transition.sessions,
-    },
-  ]));
-}
-
-function groupBySession(points: RoutePoint[]): Map<string, RoutePoint[]> {
-  const sessions = new Map<string, RoutePoint[]>();
-  for (const point of points) {
-    const existing = sessions.get(point.sessionId) ?? [];
-    existing.push(point);
-    sessions.set(point.sessionId, existing);
-  }
-  return sessions;
-}
-
-function buildOrderedCellPath(
-  points: RoutePoint[],
-  cellByKey: Map<string, TrailCell>,
-): TrailCell[] {
-  const ordered = [...points].sort((left, right) =>
-    left.sessionId.localeCompare(right.sessionId) ||
-    left.sequenceIndex - right.sequenceIndex
-  );
-  const path: TrailCell[] = [];
-  let previousKey: string | null = null;
-  for (const point of ordered) {
-    const key = pointToCellKey(point.lat, point.lon);
-    if (key === previousKey) continue;
-    const cell = cellByKey.get(key);
-    if (cell) path.push(cell);
-    previousKey = key;
-  }
-  return path;
-}
-
-// Adapt a public TrailCell (no sessionIds) to CellSupport for use in the path algorithm.
-// Uses a dummy placeholder session ID so selectBestComponent produces a non-zero session count;
-// the caller is responsible for using resolvedSessionCount from inputs rather than component.sessionCount.
-function cellToSupport(cell: TrailCell): CellSupport {
-  return { ...cell, sessionIds: new Set(['__accumulated__']) };
-}
-
-function transitionToSupport(transition: TrailTransition): TransitionSupport {
-  return { ...transition, sessionIds: new Set(['__accumulated__']) };
-}
-
-function latestCellAt(cells: TrailCell[]): string | null {
-  return cells
-    .map((c) => c.lastSeenAt)
-    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
-}
-
-function pruneIsolatedCells(
-  cells: Map<string, CellSupport>,
-  transitions: TransitionSupport[],
-): CellSupport[] {
-  if (transitions.length < 2) {
-    return [...cells.values()];
-  }
-
-  const usedCellKeys = new Set<string>();
-  for (const transition of transitions) {
-    usedCellKeys.add(transition.fromCellKey);
-    usedCellKeys.add(transition.toCellKey);
-  }
-  return [...cells.values()].filter((cell) => usedCellKeys.has(cell.cellKey));
-}
-
-function selectBestComponent(
-  cells: CellSupport[],
-  transitions: TransitionSupport[],
-): Component | null {
-  if (transitions.length === 0) {
-    return null;
-  }
-
-  const cellByKey = new Map(cells.map((cell) => [cell.cellKey, cell]));
-  const adjacency = new Map<string, Set<string>>();
-  for (const transition of transitions) {
-    addAdjacent(adjacency, transition.fromCellKey, transition.toCellKey);
-    addAdjacent(adjacency, transition.toCellKey, transition.fromCellKey);
-  }
-
-  const visited = new Set<string>();
-  const components: Component[] = [];
-  for (const cellKey of adjacency.keys()) {
-    if (visited.has(cellKey)) {
-      continue;
-    }
-
-    const queue = [cellKey];
-    const componentCellKeys = new Set<string>();
-    visited.add(cellKey);
-    while (queue.length > 0) {
-      const current = queue.shift() as string;
-      componentCellKeys.add(current);
-      for (const next of adjacency.get(current) ?? []) {
-        if (!visited.has(next)) {
-          visited.add(next);
-          queue.push(next);
-        }
-      }
-    }
-
-    const componentCells = [...componentCellKeys]
-      .map((key) => cellByKey.get(key))
-      .filter((cell): cell is CellSupport => cell !== undefined);
-    const componentTransitions = transitions.filter((transition) =>
-      componentCellKeys.has(transition.fromCellKey) &&
-      componentCellKeys.has(transition.toCellKey)
-    );
-    const sessions = new Set<string>();
-    for (const cell of componentCells) {
-      for (const sessionId of cell.sessionIds) {
-        sessions.add(sessionId);
-      }
-    }
-
-    components.push({
-      cells: componentCells,
-      transitions: componentTransitions,
-      sessionCount: sessions.size,
-      score:
-        sum(componentTransitions.map((transition) => transition.sessionCount)) +
-        sum(componentCells.map((cell) => cell.pointCount)) * 0.25 +
-        sessions.size * 0.5,
-    });
-  }
-
-  return components.sort((left, right) =>
-    right.score - left.score ||
-    right.sessionCount - left.sessionCount ||
-    right.cells.length - left.cells.length ||
-    firstCellKey(left).localeCompare(firstCellKey(right))
-  )[0] ?? null;
-}
-
-function selectPath(component: Component): { cellKeys: string[]; edgeKeys: Set<string> } {
-  const startEdge = [...component.transitions].sort(compareTransitionStrength)[0];
-  if (!startEdge) {
-    return { cellKeys: [], edgeKeys: new Set<string>() };
-  }
-
-  const path = [startEdge.fromCellKey, startEdge.toCellKey];
-  const usedEdges = new Set([edgeKey(startEdge)]);
-  extendPathStart(path, usedEdges, component.transitions);
-  extendPathEnd(path, usedEdges, component.transitions);
-
-  return { cellKeys: path, edgeKeys: usedEdges };
-}
-
-function extendPathStart(
-  path: string[],
-  usedEdges: Set<string>,
-  transitions: TransitionSupport[],
-): void {
-  while (true) {
-    const current = path[0];
-    const next = bestUnusedAdjacentEdge(current, usedEdges, transitions);
-    if (!next) {
-      return;
-    }
-    usedEdges.add(edgeKey(next));
-    path.unshift(next.fromCellKey === current ? next.toCellKey : next.fromCellKey);
-  }
-}
-
-function extendPathEnd(
-  path: string[],
-  usedEdges: Set<string>,
-  transitions: TransitionSupport[],
-): void {
-  while (true) {
-    const current = path[path.length - 1];
-    const next = bestUnusedAdjacentEdge(current, usedEdges, transitions);
-    if (!next) {
-      return;
-    }
-    usedEdges.add(edgeKey(next));
-    path.push(next.fromCellKey === current ? next.toCellKey : next.fromCellKey);
-  }
-}
-
-function bestUnusedAdjacentEdge(
-  cellKey: string,
-  usedEdges: Set<string>,
-  transitions: TransitionSupport[],
-): TransitionSupport | undefined {
-  return transitions
-    .filter((transition) =>
-      !usedEdges.has(edgeKey(transition)) &&
-      (transition.fromCellKey === cellKey || transition.toCellKey === cellKey)
-    )
-    .sort((left, right) => edgeScore(right) - edgeScore(left))[0];
-}
-
-function branchAmbiguity(transitions: TransitionSupport[]): number {
-  const outgoing = new Map<string, TransitionSupport[]>();
-  for (const transition of transitions) {
-    const list = outgoing.get(transition.fromCellKey) ?? [];
-    list.push(transition);
-    outgoing.set(transition.fromCellKey, list);
-  }
-
-  const ratios = [...outgoing.values()]
-    .filter((list) => list.length > 1)
-    .map((list) => {
-      const sorted = [...list].sort(compareTransitionStrength);
-      return supportStrength(sorted[1]) / Math.max(1, supportStrength(sorted[0]));
-    });
-  return ratios.length === 0 ? 0 : clamp(average(ratios));
-}
-
-function transitionConsistency(
-  transitions: TransitionSupport[],
-  selectedEdgeKeys: Set<string>,
-): number {
-  const allSupport = sum(transitions.map((transition) => transition.sessionCount));
-  const selectedSupport = sum(
-    transitions
-      .filter((transition) => selectedEdgeKeys.has(edgeKey(transition)))
-      .map((transition) => transition.sessionCount),
-  );
-  return clamp(selectedSupport / Math.max(1, allSupport));
-}
-
-function scoreGpsQuality(cells: Array<{ qualityScore: number }>): number {
-  return cells.length === 0 ? 0 : average(cells.map((cell) => cell.qualityScore));
-}
-
-function rejectedPointRate(
-  inferredAcceptedCount: number,
-  inputs: RouteQualityInputs,
-): number {
-  const accepted = inputs.acceptedPointCount ?? inferredAcceptedCount;
-  const rejected = inputs.rejectedPointCount ?? 0;
-  return clamp(rejected / Math.max(1, accepted + rejected));
-}
-
-function isRecommended(route: {
-  confidence: number;
-  sessionCount: number;
-  branchAmbiguityScore: number;
-  gpsQualityScore: number;
-  rejectedPointRate: number;
-  recencyScore: number;
-}): boolean {
-  return route.confidence >= recommendedConfidence &&
-    route.sessionCount >= recommendedSessionCount &&
-    route.branchAmbiguityScore <= maxRecommendedBranchAmbiguity &&
-    route.gpsQualityScore >= minRecommendedGpsQuality &&
-    route.rejectedPointRate <= maxRecommendedRejectedPointRate &&
-    route.recencyScore >= minRecommendedRecency;
-}
-
-function latestEvidenceAt(points: RoutePoint[], inputs: RouteQualityInputs): string | null {
-  if (inputs.latestEvidenceAt !== undefined) {
-    return inputs.latestEvidenceAt;
-  }
-  return points
-    .map((point) => point.recordedAt)
-    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
-}
-
-function recencyScore(latestAt: string | null, now = new Date()): number {
-  if (latestAt === null) {
-    return 0;
-  }
-  const ageMs = now.getTime() - Date.parse(latestAt);
-  if (!Number.isFinite(ageMs)) {
-    return 0;
-  }
-  const ageDays = ageMs / (24 * 60 * 60 * 1000);
-  if (ageDays <= 30) {
-    return 1;
-  }
-  if (ageDays <= 90) {
-    return 0.5;
-  }
-  return 0.2;
-}
-
-function qualityScore(accuracy: number | null): number {
-  if (accuracy === null) {
-    return 0.75;
-  }
-  return clamp(1 - accuracy / 100);
-}
-
-function addAdjacent(adjacency: Map<string, Set<string>>, from: string, to: string): void {
-  const next = adjacency.get(from) ?? new Set<string>();
-  next.add(to);
-  adjacency.set(from, next);
-}
-
-function publicCell(cell: CellSupport): TrailCell {
-  const { sessionIds: _, ...publicValue } = cell;
-  return publicValue;
-}
-
-function publicTransition(transition: TransitionSupport): TrailTransition {
-  const { sessionIds: _, ...publicValue } = transition;
-  return publicValue;
-}
-
-function routeFromScores(route: CanonicalRoute): CanonicalRoute {
-  return route;
-}
-
-function compareTransitionStrength(left: TrailTransition, right: TrailTransition): number {
-  return (
-    supportStrength(right) - supportStrength(left) ||
-    left.edgeCost - right.edgeCost ||
-    left.fromCellKey.localeCompare(right.fromCellKey) ||
-    left.toCellKey.localeCompare(right.toCellKey)
-  );
-}
-
-function edgeScore(transition: TrailTransition): number {
-  return transition.sessionCount * 10 + transition.transitionCount * 3 - transition.edgeCost;
-}
-
-function supportStrength(transition: TrailTransition): number {
-  return transition.sessionCount * 10 + transition.transitionCount;
-}
-
-function supportStrengthForCell(cell: TrailCell): number {
-  return Math.max(1, cell.pointCount * Math.max(1, cell.sessionCount));
-}
-
-function nearestDistanceMeters(cell: TrailCell, path: TrailCell[]): number {
-  return Math.min(
-    Number.POSITIVE_INFINITY,
-    ...path.map((candidate) =>
-      haversineMeters(cell.lat, cell.lon, candidate.lat, candidate.lon)
-    ),
-  );
-}
-
-function clampPointShift(
-  origin: { lat: number; lon: number },
-  target: { lat: number; lon: number },
-  maxMeters: number,
-): { lat: number; lon: number } {
-  const distance = haversineMeters(origin.lat, origin.lon, target.lat, target.lon);
-  if (distance <= maxMeters || distance === 0) return target;
-  const ratio = maxMeters / distance;
   return {
-    lat: origin.lat + (target.lat - origin.lat) * ratio,
-    lon: origin.lon + (target.lon - origin.lon) * ratio,
+    intervals,
+    transitions: buildGraphTransitions(intervals),
   };
 }
 
-function chaikinOnce(points: Array<{ lat: number; lon: number }>): Array<{ lat: number; lon: number }> {
-  if (points.length < 3) return points;
-  const smoothed: Array<{ lat: number; lon: number }> = [points[0]];
-  for (let i = 0; i < points.length - 1; i += 1) {
-    const current = points[i];
-    const next = points[i + 1];
-    smoothed.push({
-      lat: current.lat * 0.75 + next.lat * 0.25,
-      lon: current.lon * 0.75 + next.lon * 0.25,
-    });
-    smoothed.push({
-      lat: current.lat * 0.25 + next.lat * 0.75,
-      lon: current.lon * 0.25 + next.lon * 0.75,
+export function sliceTrajectoryPath(
+  points: TrajectoryPoint[],
+  startIndex: number,
+  endIndex: number,
+): TrajectoryPoint[] {
+  return points.slice(Math.max(0, startIndex), Math.min(points.length, endIndex + 1));
+}
+
+export function cumulativeMeasures(points: Array<{ lat: number; lon: number }>): number[] {
+  const measures: number[] = [0];
+  for (let index = 1; index < points.length; index += 1) {
+    measures.push(measures[index - 1] + haversineMeters(
+      points[index - 1].lat,
+      points[index - 1].lon,
+      points[index].lat,
+      points[index].lon,
+    ));
+  }
+  return measures;
+}
+
+function residualOnlyInterval(
+  sessionPath: TrajectoryPoint[],
+  config: TrailGraphMatchConfig,
+): TrailGraphInterval[] {
+  if (sessionPath.length < config.minIntervalPoints) return [];
+  const lengthMeters = trajectoryLengthMeters(sessionPath);
+  if (lengthMeters < config.minResidualLengthMeters) return [];
+  return [{
+    kind: 'candidate_edge',
+    sessionStartIndex: 0,
+    sessionEndIndex: sessionPath.length - 1,
+    sessionStartMeasureMeters: 0,
+    sessionEndMeasureMeters: lengthMeters,
+    attachStartEdgeId: null,
+    attachStartMeasureMeters: null,
+    attachEndEdgeId: null,
+    attachEndMeasureMeters: null,
+    residualKind: 'standalone',
+    lengthMeters,
+    pointCount: sessionPath.length,
+  }];
+}
+
+type AdjacentMatchedInterval = {
+  edgeId: string;
+  measureMeters: number;
+  start: number;
+  end: number;
+  lengthMeters: number;
+  direction: 'forward' | 'reverse';
+};
+
+function findAdjacentMatchedInterval(
+  intervals: Array<{ kind: 'matched' | 'residual'; edgeId: string | null; start: number; end: number }>,
+  tags: Array<{ edgeId: string | null; edgeMeasureMeters: number | null }>,
+  index: number,
+  direction: -1 | 1,
+): AdjacentMatchedInterval | null {
+  for (let cursor = index + direction; cursor >= 0 && cursor < intervals.length; cursor += direction) {
+    const interval = intervals[cursor];
+    if (interval.kind !== 'matched' || interval.edgeId === null) continue;
+    const tagIndex = direction < 0 ? interval.end : interval.start;
+    const measure = tags[tagIndex].edgeMeasureMeters;
+    const startMeasure = tags[interval.start].edgeMeasureMeters;
+    const endMeasure = tags[interval.end].edgeMeasureMeters;
+    if (measure === null || startMeasure === null || endMeasure === null) return null;
+    return {
+      edgeId: interval.edgeId,
+      measureMeters: measure,
+      start: interval.start,
+      end: interval.end,
+      lengthMeters: Math.abs(endMeasure - startMeasure),
+      direction: endMeasure >= startMeasure ? 'forward' : 'reverse',
+    };
+  }
+  return null;
+}
+
+function validatedResidualAttach(
+  sessionPath: TrajectoryPoint[],
+  residualStart: number,
+  residualEnd: number,
+  edges: TrailGraphEdgeInput[],
+  previous: AdjacentMatchedInterval | null,
+  next: AdjacentMatchedInterval | null,
+  config: TrailGraphMatchConfig,
+): {
+  start: AdjacentMatchedInterval | null;
+  end: AdjacentMatchedInterval | null;
+} {
+  const start = previous !== null &&
+      isDirectionalAttach(
+        sessionPath,
+        residualStart,
+        residualEnd,
+        edges,
+        previous,
+        'start',
+        config,
+      )
+    ? previous
+    : null;
+  const end = next !== null &&
+      isDirectionalAttach(
+        sessionPath,
+        residualStart,
+        residualEnd,
+        edges,
+        next,
+        'end',
+        config,
+      )
+    ? next
+    : null;
+
+  return { start, end };
+}
+
+function isDirectionalAttach(
+  sessionPath: TrajectoryPoint[],
+  residualStart: number,
+  residualEnd: number,
+  edges: TrailGraphEdgeInput[],
+  adjacent: AdjacentMatchedInterval,
+  side: 'start' | 'end',
+  config: TrailGraphMatchConfig,
+): boolean {
+  if (adjacent.lengthMeters < config.minAttachMatchedLengthMeters) return false;
+
+  const edge = edges.find((item) => item.id === adjacent.edgeId);
+  if (!edge || edge.path.length < 2) return false;
+
+  const residualPath = sessionPath.slice(residualStart, residualEnd + 1);
+  if (
+    residualPath.length < config.minIntervalPoints &&
+    trajectoryLengthMeters(residualPath) < config.minResidualLengthMeters
+  ) {
+    return false;
+  }
+  const separationRatio = residualPath.filter((point) =>
+    distanceToPolylineMeters(point, edge.path) > config.maxDistanceMeters
+  ).length / residualPath.length;
+  if (separationRatio < config.minSeparationRatio) return false;
+
+  const edgeVector = edgeTangentVector(edge.path, adjacent.measureMeters, adjacent.direction);
+  const residualVector = side === 'start'
+    ? residualExitVector(sessionPath, adjacent.end, residualEnd, config.directionSampleMeters)
+    : residualEntryVector(sessionPath, residualStart, adjacent.start, config.directionSampleMeters);
+  if (!edgeVector || !residualVector) return false;
+
+  return vectorAngleDegrees(edgeVector, residualVector) >= config.minDivergenceAngleDegrees;
+}
+
+function isAttachableGraphEdge(edge: TrailGraphEdgeInput): boolean {
+  return edge.status === undefined || edge.status === 'reference' || edge.status === 'recommended';
+}
+
+function edgeTangentVector(
+  path: TrajectoryPoint[],
+  measureMeters: number,
+  direction: 'forward' | 'reverse',
+): { x: number; y: number } | null {
+  const lengthMeters = trajectoryLengthMeters(path);
+  if (lengthMeters <= 0) return null;
+  const before = pointAtMeasure(path, Math.max(0, measureMeters - 20));
+  const after = pointAtMeasure(path, Math.min(lengthMeters, measureMeters + 20));
+  return direction === 'forward'
+    ? vectorMeters(before, after)
+    : vectorMeters(after, before);
+}
+
+function residualExitVector(
+  sessionPath: TrajectoryPoint[],
+  attachIndex: number,
+  residualEnd: number,
+  sampleMeters: number,
+): { x: number; y: number } | null {
+  if (attachIndex >= residualEnd) return null;
+  const path = sessionPath.slice(attachIndex, residualEnd + 1);
+  const target = pointAtMeasure(path, Math.min(sampleMeters, trajectoryLengthMeters(path)));
+  return vectorMeters(path[0], target);
+}
+
+function residualEntryVector(
+  sessionPath: TrajectoryPoint[],
+  residualStart: number,
+  attachIndex: number,
+  sampleMeters: number,
+): { x: number; y: number } | null {
+  if (residualStart >= attachIndex) return null;
+  const path = sessionPath.slice(residualStart, attachIndex + 1);
+  const lengthMeters = trajectoryLengthMeters(path);
+  const source = pointAtMeasure(path, Math.max(0, lengthMeters - sampleMeters));
+  return vectorMeters(source, path[path.length - 1]);
+}
+
+function pointAtMeasure<T extends { lat: number; lon: number }>(path: T[], measureMeters: number): T {
+  if (path.length === 0) throw new Error('pointAtMeasure requires at least one point');
+  if (path.length === 1 || measureMeters <= 0) return path[0];
+
+  let consumed = 0;
+  for (let index = 1; index < path.length; index += 1) {
+    const previous = path[index - 1];
+    const current = path[index];
+    const segmentLength = haversineMeters(previous.lat, previous.lon, current.lat, current.lon);
+    if (segmentLength <= 0) continue;
+    if (consumed + segmentLength >= measureMeters) {
+      const ratio = Math.max(0, Math.min(1, (measureMeters - consumed) / segmentLength));
+      return {
+        ...previous,
+        lat: previous.lat + (current.lat - previous.lat) * ratio,
+        lon: previous.lon + (current.lon - previous.lon) * ratio,
+      };
+    }
+    consumed += segmentLength;
+  }
+
+  return path[path.length - 1];
+}
+
+function vectorMeters(
+  from: { lat: number; lon: number },
+  to: { lat: number; lon: number },
+): { x: number; y: number } | null {
+  const lat = ((from.lat + to.lat) / 2) * Math.PI / 180;
+  const x = (to.lon - from.lon) * 111_320 * Math.cos(lat);
+  const y = (to.lat - from.lat) * 111_320;
+  if (Math.hypot(x, y) < 1) return null;
+  return { x, y };
+}
+
+function vectorAngleDegrees(
+  left: { x: number; y: number },
+  right: { x: number; y: number },
+): number {
+  const leftLength = Math.hypot(left.x, left.y);
+  const rightLength = Math.hypot(right.x, right.y);
+  if (leftLength === 0 || rightLength === 0) return 0;
+  const cosine = Math.max(-1, Math.min(1, (left.x * right.x + left.y * right.y) / (leftLength * rightLength)));
+  return Math.acos(cosine) * 180 / Math.PI;
+}
+
+function residualKind(
+  attachStartEdgeId: string | null,
+  attachEndEdgeId: string | null,
+): TrailGraphResidualKind {
+  if (attachStartEdgeId !== null && attachEndEdgeId !== null) return 'connector';
+  if (attachStartEdgeId !== null) return 'branch_out';
+  if (attachEndEdgeId !== null) return 'branch_in';
+  return 'standalone';
+}
+
+function buildGraphTransitions(intervals: TrailGraphInterval[]): TrailGraphTransition[] {
+  const transitions: TrailGraphTransition[] = [];
+  for (let index = 1; index < intervals.length; index += 1) {
+    const previous = intervals[index - 1];
+    const current = intervals[index];
+    const fromEdgeId = previous.kind === 'matched_edge' ? previous.edgeId : null;
+    const toEdgeId = current.kind === 'matched_edge' ? current.edgeId : null;
+    if (fromEdgeId === null && toEdgeId === null) continue;
+    transitions.push({
+      fromEdgeId,
+      toEdgeId,
+      nodeMeasureMeters: current.kind === 'matched_edge'
+        ? current.edgeStartMeasureMeters
+        : current.attachStartMeasureMeters,
+      direction: current.kind === 'matched_edge' ? current.direction : 'unknown',
     });
   }
-  smoothed.push(points[points.length - 1]);
-  return smoothed;
+  return transitions;
 }
 
 function simplifyPolyline<T extends { lat: number; lon: number }>(points: T[], toleranceMeters: number): T[] {
@@ -1270,9 +898,7 @@ function simplifyPolyline<T extends { lat: number; lon: number }>(points: T[], t
     }
   }
 
-  if (maxDistance <= toleranceMeters) {
-    return [start, end];
-  }
+  if (maxDistance <= toleranceMeters) return [start, end];
 
   const left = simplifyPolyline(points.slice(0, maxIndex + 1), toleranceMeters);
   const right = simplifyPolyline(points.slice(maxIndex), toleranceMeters);
@@ -1289,9 +915,7 @@ function resampleLine<T extends { lat: number; lon: number }>(
 
   const totalLength = trajectoryLengthMeters(points);
   const count = targetCount ?? Math.max(2, Math.floor(totalLength / Math.max(1, spacingMeters ?? 20)) + 1);
-  if (totalLength === 0) {
-    return Array.from({ length: count }, () => points[0]);
-  }
+  if (totalLength === 0) return Array.from({ length: count }, () => points[0]);
 
   const distances = Array.from({ length: count }, (_, index) =>
     (totalLength * index) / Math.max(1, count - 1)
@@ -1312,10 +936,27 @@ function resampleLine<T extends { lat: number; lon: number }>(
       );
       if (segmentStartDistance + segmentLength >= targetDistance) {
         const ratio = segmentLength === 0 ? 0 : (targetDistance - segmentStartDistance) / segmentLength;
+        const previous = points[segmentIndex - 1];
+        const current = points[segmentIndex];
         result.push({
-          ...points[segmentIndex - 1],
-          lat: points[segmentIndex - 1].lat + (points[segmentIndex].lat - points[segmentIndex - 1].lat) * ratio,
-          lon: points[segmentIndex - 1].lon + (points[segmentIndex].lon - points[segmentIndex - 1].lon) * ratio,
+          ...previous,
+          lat: previous.lat + (current.lat - previous.lat) * ratio,
+          lon: previous.lon + (current.lon - previous.lon) * ratio,
+          recordedAt: interpolateIsoTime(
+            (previous as { recordedAt?: string }).recordedAt,
+            (current as { recordedAt?: string }).recordedAt,
+            ratio,
+          ) ?? (previous as { recordedAt?: string }).recordedAt,
+          accuracy: interpolateOptionalNumber(
+            (previous as { accuracy?: number | null }).accuracy,
+            (current as { accuracy?: number | null }).accuracy,
+            ratio,
+          ),
+          altitude: interpolateOptionalNumber(
+            (previous as { altitude?: number | null }).altitude,
+            (current as { altitude?: number | null }).altitude,
+            ratio,
+          ),
         });
         break;
       }
@@ -1323,9 +964,7 @@ function resampleLine<T extends { lat: number; lon: number }>(
       segmentIndex += 1;
     }
 
-    if (result.length < targetIndex + 1) {
-      result.push(points[points.length - 1]);
-    }
+    if (result.length < targetIndex + 1) result.push(points[points.length - 1]);
   }
 
   if (result.length === 0) {
@@ -1356,6 +995,37 @@ function pointToSegmentDistanceMeters(
   start: { lat: number; lon: number },
   end: { lat: number; lon: number },
 ): number {
+  return projectPointToSegment(point, start, end).distanceMeters;
+}
+
+function projectMeasureOnLine(
+  point: { lat: number; lon: number },
+  line: Array<{ lat: number; lon: number }>,
+): number {
+  if (line.length < 2) return 0;
+
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestMeasure = 0;
+  let cumulativeMeasure = 0;
+  for (let index = 1; index < line.length; index += 1) {
+    const start = line[index - 1];
+    const end = line[index];
+    const segmentLength = haversineMeters(start.lat, start.lon, end.lat, end.lon);
+    const projection = projectPointToSegment(point, start, end);
+    if (projection.distanceMeters < bestDistance) {
+      bestDistance = projection.distanceMeters;
+      bestMeasure = cumulativeMeasure + segmentLength * projection.ratio;
+    }
+    cumulativeMeasure += segmentLength;
+  }
+  return bestMeasure;
+}
+
+function projectPointToSegment(
+  point: { lat: number; lon: number },
+  start: { lat: number; lon: number },
+  end: { lat: number; lon: number },
+): { ratio: number; distanceMeters: number } {
   const metersPerDegreeLat = 111_320;
   const metersPerDegreeLon = 111_320 * Math.cos((point.lat * Math.PI) / 180);
   const px = point.lon * metersPerDegreeLon;
@@ -1368,12 +1038,15 @@ function pointToSegmentDistanceMeters(
   const dy = by - ay;
   const lengthSquared = dx * dx + dy * dy;
   if (lengthSquared === 0) {
-    return haversineMeters(point.lat, point.lon, start.lat, start.lon);
+    return {
+      ratio: 0,
+      distanceMeters: haversineMeters(point.lat, point.lon, start.lat, start.lon),
+    };
   }
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared));
-  const cx = ax + dx * t;
-  const cy = ay + dy * t;
-  return Math.hypot(px - cx, py - cy);
+  const ratio = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared));
+  const cx = ax + dx * ratio;
+  const cy = ay + dy * ratio;
+  return { ratio, distanceMeters: Math.hypot(px - cx, py - cy) };
 }
 
 function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -1387,18 +1060,23 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function edgeKey(transition: TrailTransition): string {
-  return `${transition.fromCellKey}->${transition.toCellKey}`;
-}
-
-function firstCellKey(component: Component): string {
-  return component.cells
-    .map((cell) => cell.cellKey)
-    .sort()[0] ?? '';
-}
-
-function dedupeStrings(values: string[]): string[] {
-  return [...new Set(values)];
+function chaikinOnce(points: Array<{ lat: number; lon: number }>): Array<{ lat: number; lon: number }> {
+  if (points.length < 3) return points;
+  const smoothed: Array<{ lat: number; lon: number }> = [points[0]];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const current = points[i];
+    const next = points[i + 1];
+    smoothed.push({
+      lat: current.lat * 0.75 + next.lat * 0.25,
+      lon: current.lon * 0.75 + next.lon * 0.25,
+    });
+    smoothed.push({
+      lat: current.lat * 0.25 + next.lat * 0.75,
+      lon: current.lon * 0.25 + next.lon * 0.75,
+    });
+  }
+  smoothed.push(points[points.length - 1]);
+  return smoothed;
 }
 
 function average(values: number[]): number {
@@ -1412,29 +1090,40 @@ function averageNullable(values: Array<number | null>): number | null {
   return finite.length === 0 ? null : average(finite);
 }
 
-function sum(values: number[]): number {
-  return values.reduce((total, value) => total + value, 0);
+function interpolateOptionalNumber(
+  left: number | null | undefined,
+  right: number | null | undefined,
+  ratio: number,
+): number | null {
+  if (typeof left === 'number' && Number.isFinite(left) && typeof right === 'number' && Number.isFinite(right)) {
+    return left + (right - left) * ratio;
+  }
+  if (typeof left === 'number' && Number.isFinite(left)) return left;
+  if (typeof right === 'number' && Number.isFinite(right)) return right;
+  return null;
 }
 
-function clamp(value: number): number {
-  return Math.max(0, Math.min(1, value));
+function interpolateIsoTime(
+  left: string | undefined,
+  right: string | undefined,
+  ratio: number,
+): string | null {
+  const leftMs = parseOptionalTime(left);
+  const rightMs = parseOptionalTime(right);
+  if (leftMs === null || rightMs === null) return null;
+  return new Date(leftMs + (rightMs - leftMs) * ratio).toISOString();
 }
 
-function emptyRoute(): CanonicalRoute {
-  return {
-    cells: [],
-    transitions: [],
-    line: [],
-    cellKeys: [],
-    confidence: 0,
-    confidenceLevel: 'none',
-    sessionCount: 0,
-    branchAmbiguityScore: 0,
-    gpsQualityScore: 0,
-    transitionConsistencyScore: 0,
-    rejectedPointRate: 0,
-    recencyScore: 0,
-  };
+function parseOptionalTime(value: string | null | undefined): number | null {
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function latestIsoString(left: string | null, right: string | null): string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Date.parse(right) > Date.parse(left) ? right : left;
 }
 
 function emptyTrajectory(): RefinedTrajectory {

@@ -24,13 +24,10 @@ verify_jwt = false
 [functions.snap-position]
 verify_jwt = false
 
-[functions.recompute-canonical-trails]
-verify_jwt = false
-
 [functions.match-and-aggregate-sessions]
 verify_jwt = false
 
-[functions.promote-candidate-cluster]
+[functions.promote-candidate-edge]
 verify_jwt = false
 
 [functions.get-mountains]
