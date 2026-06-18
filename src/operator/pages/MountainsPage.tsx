@@ -95,6 +95,8 @@ export function MountainsPage() {
       maxLon: bbox ? String(bbox[2]) : '',
       maxLat: bbox ? String(bbox[3]) : '',
     });
+    // focus preview to this mountain so the map can be used as a drawing target
+    setPreviewId(mountain.id);
   }
 
   function cancelEdit() {
@@ -325,6 +327,18 @@ export function MountainsPage() {
                     routeState: r.routeState,
                   }))}
                   title={previewMountain.displayName}
+                  // If we're editing this mountain, enable the small bbox editor.
+                  enableBBoxEditor={edit?.mountainId === previewMountain.id}
+                  onBBoxChange={(newBbox) => {
+                    if (!newBbox) return;
+                    setEdit((prev) => prev ? ({
+                      ...prev,
+                      minLon: String(newBbox[0]),
+                      minLat: String(newBbox[1]),
+                      maxLon: String(newBbox[2]),
+                      maxLat: String(newBbox[3]),
+                    }) : prev);
+                  }}
                 />
               </Suspense>
             ) : (

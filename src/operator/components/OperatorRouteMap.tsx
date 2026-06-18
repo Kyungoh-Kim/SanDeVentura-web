@@ -8,7 +8,8 @@ import LineString from 'ol/geom/LineString';
 import Point from 'ol/geom/Point';
 import TileLayer from 'ol/layer/Tile';
 import VectorLayer from 'ol/layer/Vector';
-import { fromLonLat, transformExtent } from 'ol/proj';
+import { fromLonLat, transformExtent, toLonLat } from 'ol/proj';
+import Polygon from 'ol/geom/Polygon';
 import OSM from 'ol/source/OSM';
 import VectorSource from 'ol/source/Vector';
 import XYZ from 'ol/source/XYZ';
@@ -42,6 +43,9 @@ type OperatorRouteMapProps = {
   preserveViewOnRoutesChange?: boolean;
   preserveExpandedViewLocally?: boolean;
   onOverlayClick?: (overlayId: string, viewState: MapViewState | null) => void;
+  // Enable a simple bbox editor: user clicks two points to define rectangle.
+  enableBBoxEditor?: boolean;
+  onBBoxChange?: ((bbox: [number, number, number, number] | null) => void) | null;
 };
 
 const routeColors: Record<RouteState, string> = {
@@ -94,6 +98,8 @@ export function OperatorRouteMap({
   preserveViewOnRoutesChange = false,
   preserveExpandedViewLocally = false,
   onOverlayClick,
+  enableBBoxEditor = false,
+  onBBoxChange = null,
 }: OperatorRouteMapProps) {
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const [mapElement, setMapElement] = useState<HTMLDivElement | null>(null);
@@ -103,11 +109,14 @@ export function OperatorRouteMap({
   const tileLayerRef = useRef<TileLayer<OSM | XYZ> | null>(null);
   const mapRef = useRef<Map | null>(null);
   const dynamicLayersRef = useRef<VectorLayer<VectorSource>[]>([]);
+  const bboxEditorRef = useRef<{ layer: VectorLayer<VectorSource> | null; points: [number, number][] } | null>(null);
   const hoverSourceRef = useRef<VectorSource | null>(null);
   const discoveryModeRef = useRef(discoveryMode);
   const onOverlayClickRef = useRef(onOverlayClick);
   const viewStateRef = useRef<MapViewState | null>(initialViewState);
   const [hoveredOverlay, setHoveredOverlay] = useState<RouteOverlay | null>(null);
+  const enableBBoxEditorRef = useRef<boolean>(enableBBoxEditor);
+  const onBBoxChangeRef = useRef<((bbox: [number, number, number, number] | null) => void) | null>(onBBoxChange);
   const hasSelectedOverlay = routes?.some((route) => route.selected) ?? false;
   const hasPromotionReadyOverlay =
     !hasSelectedOverlay && (routes?.some((route) => route.promotionReady) ?? false);
@@ -128,7 +137,9 @@ export function OperatorRouteMap({
   useEffect(() => {
     discoveryModeRef.current = discoveryMode;
     onOverlayClickRef.current = onOverlayClick;
-  }, [discoveryMode, onOverlayClick]);
+    enableBBoxEditorRef.current = !!enableBBoxEditor;
+    onBBoxChangeRef.current = onBBoxChange ?? null;
+  }, [discoveryMode, onOverlayClick, enableBBoxEditor, onBBoxChange]);
 
   useEffect(() => {
     if (!mapElement || mapRef.current) return undefined;
@@ -184,6 +195,45 @@ export function OperatorRouteMap({
     };
 
     const handleSingleClick = (event: any) => {
+      // BBox editor: collect two clicks to form bbox and draw it
+      if (enableBBoxEditorRef.current) {
+        const coord = toLonLat(event.coordinate);
+        const lon = coord[0];
+        const lat = coord[1];
+        if (!bboxEditorRef.current) bboxEditorRef.current = { layer: null, points: [] };
+        const ed = bboxEditorRef.current;
+        ed.points.push([lon, lat]);
+        if (ed.points.length === 2) {
+          const p1 = ed.points[0];
+          const p2 = ed.points[1];
+          const minLon = Math.min(p1[0], p2[0]);
+          const minLat = Math.min(p1[1], p2[1]);
+          const maxLon = Math.max(p1[0], p2[0]);
+          const maxLat = Math.max(p1[1], p2[1]);
+          const bboxVal: [number, number, number, number] = [minLon, minLat, maxLon, maxLat];
+          // draw polygon representing bbox
+          const polygon = new Polygon([[
+            fromLonLat([minLon, minLat]),
+            fromLonLat([minLon, maxLat]),
+            fromLonLat([maxLon, maxLat]),
+            fromLonLat([maxLon, minLat]),
+            fromLonLat([minLon, minLat]),
+          ]]);
+          const feature = new Feature(polygon);
+          feature.setProperties({ hoverable: false });
+          if (ed.layer) {
+            map.removeLayer(ed.layer);
+          }
+          const layer = new VectorLayer({ source: new VectorSource({ features: [feature] }), style: bboxStyle(), zIndex: 11 });
+          ed.layer = layer;
+          map.addLayer(layer);
+          onBBoxChangeRef.current?.(bboxVal);
+          // reset to allow re-drawing
+          ed.points = [];
+        }
+        return;
+      }
+
       const hit = map.forEachFeatureAtPixel(
         event.pixel,
         (feature) => feature.get('selectableClickTarget') ? feature : undefined,
@@ -615,6 +665,13 @@ function selectableClickTargetStyle(): Style {
       lineJoin: 'round',
       width: 18,
     }),
+  });
+}
+
+function bboxStyle(): Style {
+  return new Style({
+    stroke: new Stroke({ color: 'rgba(40, 116, 240, 0.9)', width: 2, lineDash: [6, 6] }),
+    fill: new Fill({ color: 'rgba(40, 116, 240, 0.12)' }),
   });
 }
 
