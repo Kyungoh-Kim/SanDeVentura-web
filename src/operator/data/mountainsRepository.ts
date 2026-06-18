@@ -17,6 +17,14 @@ export async function fetchMountains(): Promise<Mountain[]> {
   }));
 }
 
+export async function createMountain(
+  id: string,
+  displayName: string,
+  bbox: string | null,
+): Promise<void> {
+  await invokeOperatorApi<null>('createMountain', { mountainId: id, displayName, bbox });
+}
+
 export async function updateMountainBbox(
   id: string,
   bbox: string | null,

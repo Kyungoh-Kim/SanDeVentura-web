@@ -153,6 +153,13 @@ async function handleAction(supabase: SupabaseClient, body: OperatorRequest): Pr
         .update({ bbox: body.bbox ?? null })
         .eq('id', body.mountainId));
 
+    case 'createMountain':
+      requireParam(body.mountainId, 'mountainId');
+      requireParam(body.displayName, 'displayName');
+      return mutate(await supabase
+        .from('mountains')
+        .insert({ id: body.mountainId, display_name: body.displayName, bbox: body.bbox ?? null }));
+
     case 'renameRoute':
       requireParam(body.routeId, 'routeId');
       requireParam(body.displayName, 'displayName');

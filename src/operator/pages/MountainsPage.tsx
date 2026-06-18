@@ -7,6 +7,7 @@ import {
   formatBbox,
   parseBbox,
   updateMountainBbox,
+  createMountain,
 } from '../data/mountainsRepository';
 import { fetchMountainRouteDetails, fetchRouteCoverage } from '../data/routesRepository';
 
@@ -31,6 +32,8 @@ export function MountainsPage() {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewRoutes, setPreviewRoutes] = useState<OperatorRouteDetail[]>([]);
   const [page, setPage] = useState(1);
+  const [showCreateModal, setShowCreateModal] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const loadMountains = useCallback(() => {
     Promise.all([fetchMountains(), fetchRouteCoverage()])
@@ -148,7 +151,10 @@ export function MountainsPage() {
         <h2>Mountains</h2>
         <span className="page-badge">Operator only</span>
         <div style={{ flex: 1 }} />
-        <button className="btn btn-ghost" type="button" onClick={loadMountains}>
+        <button className="btn btn-primary" type="button" onClick={() => setShowCreateModal('') }>
+          Add mountain
+        </button>
+        <button style={{ marginLeft: 8 }} className="btn btn-ghost" type="button" onClick={loadMountains}>
           Refresh
         </button>
       </div>
@@ -185,6 +191,28 @@ export function MountainsPage() {
           <div className="stat-value">{totals.sessions.toLocaleString()}</div>
         </div>
       </div>
+
+      {showCreateModal !== null && (
+        <CreateMountainModal
+          value={showCreateModal}
+          onChange={(v) => setShowCreateModal(v)}
+          onCancel={() => setShowCreateModal(null)}
+          onConfirm={async (id, displayName, bbox) => {
+            setCreating(true);
+            try {
+              await createMountain(id, displayName, bbox ?? null);
+              setShowCreateModal(null);
+              loadMountains();
+              setPreviewId(id);
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            } finally {
+              setCreating(false);
+            }
+          }}
+          creating={creating}
+        />
+      )}
 
       <div className="route-layout">
         <div className="table-panel">
@@ -352,6 +380,81 @@ export function MountainsPage() {
       </div>
 
     </>
+  );
+}
+
+function CreateMountainModal({
+  value,
+  onChange,
+  onConfirm,
+  onCancel,
+  creating,
+}: {
+  value: string | null;
+  onChange: (v: string) => void;
+  onConfirm: (id: string, displayName: string, bbox: string | null) => Promise<void>;
+  onCancel: () => void;
+  creating: boolean;
+}) {
+  const id = value ?? '';
+  const [displayName, setDisplayName] = useState('');
+  const [bbox, setBbox] = useState('');
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter' && id.trim() !== '' && displayName.trim() !== '') onConfirm(id.trim(), displayName.trim(), bbox.trim() === '' ? null : bbox.trim());
+    if (e.key === 'Escape') onCancel();
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3 className="modal-title">Add mountain</h3>
+        <p className="modal-body">Create a new mountain identifier and display name.</p>
+        <label className="modal-label">
+          Mountain ID
+          <input className="modal-input" type="text" value={id} onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown} maxLength={80} />
+        </label>
+        <label className="modal-label">
+          Display name
+          <input className="modal-input" type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} onKeyDown={onKeyDown} maxLength={120} />
+        </label>
+        <label className="modal-label">
+          BBox (minLon,minLat,maxLon,maxLat) — optional
+          <input className="modal-input" type="text" value={bbox} onChange={(e) => setBbox(e.target.value)} onKeyDown={onKeyDown} />
+        </label>
+
+        <div style={{ marginTop: 8 }}>
+          <small style={{ color: 'var(--text-3)' }}>Or draw bbox on map by clicking two points.</small>
+          <div style={{ height: 240, marginTop: 8 }}>
+            <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing map preview.</span></div>}>
+              <OperatorRouteMap
+                geometry={null}
+                routeState="none"
+                bbox={parseBbox(bbox.trim() === '' ? null : bbox.trim())}
+                allowExpand={false}
+                enableBBoxEditor
+                onBBoxChange={(newBbox) => {
+                  if (!newBbox) return;
+                  // formatBbox is imported in this module
+                  const formatted = formatBbox(newBbox);
+                  setBbox(formatted);
+                }}
+              />
+            </Suspense>
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            onClick={() => onConfirm(id.trim(), displayName.trim(), bbox.trim() === '' ? null : bbox.trim())}
+            disabled={id.trim() === '' || displayName.trim() === '' || creating}
+          >
+            {creating ? 'Creating...' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
