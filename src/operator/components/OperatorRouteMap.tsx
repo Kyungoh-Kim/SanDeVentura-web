@@ -117,6 +117,11 @@ export function OperatorRouteMap({
   const [hoveredOverlay, setHoveredOverlay] = useState<RouteOverlay | null>(null);
   const enableBBoxEditorRef = useRef<boolean>(enableBBoxEditor);
   const onBBoxChangeRef = useRef<((bbox: [number, number, number, number] | null) => void) | null>(onBBoxChange);
+  const mouseDownRef = useRef(false);
+  const spaceDownRef = useRef(false);
+  const spaceStateRef = useRef<{ bboxEditorWasOn: boolean }>({ bboxEditorWasOn: false });
+  const bboxEditorTemporarilyDisabledRef = useRef(false);
+  const lastHitRef = useRef(false);
   const hasSelectedOverlay = routes?.some((route) => route.selected) ?? false;
   const hasPromotionReadyOverlay =
     !hasSelectedOverlay && (routes?.some((route) => route.promotionReady) ?? false);
@@ -166,6 +171,26 @@ export function OperatorRouteMap({
     });
     map.addLayer(hoverLayer);
 
+    const updateCursor = () => {
+      try {
+        const el = map.getTargetElement();
+        if (!el) return;
+        if (lastHitRef.current) {
+          el.style.cursor = 'pointer';
+          return;
+        }
+        // when bbox editor is active and space is NOT held, indicate drawing (crosshair)
+        if (enableBBoxEditorRef.current && !spaceDownRef.current) {
+          el.style.cursor = mouseDownRef.current ? 'grabbing' : 'crosshair';
+          return;
+        }
+        // otherwise show pan cursor
+        el.style.cursor = mouseDownRef.current ? 'grabbing' : 'grab';
+      } catch {
+        // ignore
+      }
+    };
+
     const handlePointerMove = (event: any) => {
       const hit = map.forEachFeatureAtPixel(
         event.pixel,
@@ -173,8 +198,9 @@ export function OperatorRouteMap({
         { hitTolerance: 8 },
       );
 
+      lastHitRef.current = !!hit;
       hoverSource.clear();
-      map.getTargetElement().style.cursor = hit ? 'pointer' : '';
+      updateCursor();
 
       if (!hit) {
         setHoveredOverlay(null);
@@ -196,7 +222,7 @@ export function OperatorRouteMap({
 
     const handleSingleClick = (event: any) => {
       // BBox editor: collect two clicks to form bbox and draw it
-      if (enableBBoxEditorRef.current) {
+      if (enableBBoxEditorRef.current && !bboxEditorTemporarilyDisabledRef.current) {
         const coord = toLonLat(event.coordinate);
         const lon = coord[0];
         const lat = coord[1];
@@ -255,13 +281,49 @@ export function OperatorRouteMap({
     map.on('pointermove', handlePointerMove);
     map.on('singleclick', handleSingleClick);
     map.on('moveend', handleMoveEnd);
+    // viewport pointer events for cursor grab/grabbing behavior
+    const viewport = map.getViewport();
+    const vpPointerDown = () => { try { mouseDownRef.current = true; const el = map.getTargetElement(); if (el) el.style.cursor = 'grabbing'; } catch {} };
+    const vpPointerUp = () => { try { mouseDownRef.current = false; updateCursor(); } catch {} };
+    const vpPointerLeave = () => { try { mouseDownRef.current = false; const el = map.getTargetElement(); if (el) el.style.cursor = ''; } catch {} };
+    viewport.addEventListener('pointerdown', vpPointerDown as EventListener);
+    viewport.addEventListener('pointerup', vpPointerUp as EventListener);
+    viewport.addEventListener('pointerleave', vpPointerLeave as EventListener);
     window.requestAnimationFrame(() => map.updateSize());
     handleMoveEnd();
+
+    // global key handlers for spacebar to temporarily disable bbox editor and show pan cursor
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.code !== 'Space') return;
+      if (spaceDownRef.current) return;
+      spaceDownRef.current = true;
+      spaceStateRef.current.bboxEditorWasOn = enableBBoxEditorRef.current;
+      if (enableBBoxEditorRef.current) {
+        bboxEditorTemporarilyDisabledRef.current = true;
+      }
+      try { const el = map.getTargetElement(); if (el) el.style.cursor = mouseDownRef.current ? 'grabbing' : 'grab'; } catch {}
+      e.preventDefault();
+    }
+
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code !== 'Space') return;
+      spaceDownRef.current = false;
+      if (spaceStateRef.current.bboxEditorWasOn) {
+        bboxEditorTemporarilyDisabledRef.current = false;
+      }
+      updateCursor();
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
 
     return () => {
       map.un('pointermove', handlePointerMove);
       map.un('singleclick', handleSingleClick);
       map.un('moveend', handleMoveEnd);
+      try { const vp = map.getViewport(); vp.removeEventListener('pointerdown', vpPointerDown as EventListener); vp.removeEventListener('pointerup', vpPointerUp as EventListener); vp.removeEventListener('pointerleave', vpPointerLeave as EventListener); } catch {}
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
       map.setTarget(undefined);
       tileLayerRef.current = null;
       mapRef.current = null;
