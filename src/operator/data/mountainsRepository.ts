@@ -32,16 +32,29 @@ export async function updateMountainBbox(
   await invokeOperatorApi<null>('updateMountainBbox', { mountainId: id, bbox });
 }
 
+export async function updateMountain(
+  id: string,
+  displayName: string,
+  bbox: string | null,
+): Promise<void> {
+  // Server action 'updateMountain' should handle updating display name and bbox.
+  // If backend uses separate actions, this can be adjusted later.
+  await invokeOperatorApi<null>('updateMountain', { mountainId: id, displayName, bbox });
+}
+
 export function parseBbox(
   raw: string | null,
 ): [number, number, number, number] | null {
   if (!raw) return null;
   const parts = raw.split(',').map(Number);
+  if (parts.length !== 4 || parts.some(Number.isNaN)) return null;
+  const [minLon, minLat, maxLon, maxLat] = parts;
+  // basic ordering checks (min < max)
+  if (minLon >= maxLon || minLat >= maxLat) return null;
+  // validate ranges: lon [-180,180], lat [-90,90]
   if (
-    parts.length !== 4 ||
-    parts.some(Number.isNaN) ||
-    parts[0] >= parts[2] ||
-    parts[1] >= parts[3]
+    minLon < -180 || minLon > 180 || maxLon < -180 || maxLon > 180 ||
+    minLat < -90 || minLat > 90 || maxLat < -90 || maxLat > 90
   ) {
     return null;
   }

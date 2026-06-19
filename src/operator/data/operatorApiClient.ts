@@ -21,7 +21,11 @@ export async function invokeOperatorApi<T>(
     throw new Error(error.message ?? 'Operator API invocation failed');
   }
   if (!data?.success) {
-    throw new Error(data?.errors?.[0] ?? 'Operator API returned an error');
+    const serverErr = data?.errors?.[0] ?? 'Operator API returned an error';
+    // map a few well-known server error codes to user-friendly messages
+    if (serverErr === 'mountain_id_conflict') throw new Error('Mountain id already exists');
+    if (typeof serverErr === 'string' && serverErr.startsWith('invalid_bbox')) throw new Error('Invalid bbox');
+    throw new Error(serverErr);
   }
 
   return data.data;

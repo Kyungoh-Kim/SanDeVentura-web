@@ -29,6 +29,23 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function validateBboxOrNull(bbox: string | null | undefined): void {
+  if (bbox == null) return;
+  if (typeof bbox !== 'string') throw new Error('invalid_bbox');
+  const parts = bbox.split(',').map(Number);
+  if (parts.length !== 4 || parts.some(Number.isNaN)) throw new Error('invalid_bbox_format');
+  const [minLon, minLat, maxLon, maxLat] = parts;
+  // longitude must be within [-180, 180], latitude within [-90, 90]
+  if (
+    minLon < -180 || minLon > 180 || maxLon < -180 || maxLon > 180 ||
+    minLat < -90 || minLat > 90 || maxLat < -90 || maxLat > 90
+  ) {
+    throw new Error('invalid_bbox_range');
+  }
+  // min must be strictly less than max
+  if (minLon >= maxLon || minLat >= maxLat) throw new Error('invalid_bbox_order');
+}
+
 export async function handleOperatorApi(request: Request): Promise<Response> {
   if (request.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -57,7 +74,13 @@ export async function handleOperatorApi(request: Request): Promise<Response> {
     return jsonResponse({ success: true, data });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown_error';
-    const status = message === 'unknown_action' || message.endsWith('_required') ? 400 : 500;
+    // Map well-known error suffixes to HTTP status codes:
+    // - _required and invalid_* -> 400 (bad request)
+    // - _conflict -> 409 (conflict, e.g. duplicate id)
+    // otherwise -> 500
+    let status = 500;
+    if (message === 'unknown_action' || message.endsWith('_required') || message.startsWith('invalid_')) status = 400;
+    if (message.endsWith('_conflict')) status = 409;
     return jsonResponse({ success: false, errors: [message] }, status);
   }
 }
@@ -148,17 +171,40 @@ async function handleAction(supabase: SupabaseClient, body: OperatorRequest): Pr
 
     case 'updateMountainBbox':
       requireParam(body.mountainId, 'mountainId');
+          validateBboxOrNull(body.bbox);
+          return mutate(await supabase
+            .from('mountains')
+            .update({ bbox: body.bbox ?? null })
+            .eq('id', body.mountainId));
+
+    case 'updateMountain':
+      requireParam(body.mountainId, 'mountainId');
+      requireParam(body.displayName, 'displayName');
+      // validate optional bbox string before attempting update
+      validateBboxOrNull(body.bbox);
       return mutate(await supabase
         .from('mountains')
-        .update({ bbox: body.bbox ?? null })
+        .update({ display_name: body.displayName, bbox: body.bbox ?? null })
         .eq('id', body.mountainId));
 
     case 'createMountain':
       requireParam(body.mountainId, 'mountainId');
       requireParam(body.displayName, 'displayName');
-      return mutate(await supabase
+      // validate optional bbox string before attempting insert
+      validateBboxOrNull(body.bbox);
+      // perform insert and translate unique-constraint errors to a clear code
+      const result = await supabase
         .from('mountains')
-        .insert({ id: body.mountainId, display_name: body.displayName, bbox: body.bbox ?? null }));
+        .insert({ id: body.mountainId, display_name: body.displayName, bbox: body.bbox ?? null });
+      if (result.error) {
+        const msg = String(result.error.message ?? 'database_error');
+        const lower = msg.toLowerCase();
+        if (lower.includes('duplicate') || lower.includes('unique') || lower.includes('already exists')) {
+          throw new Error('mountain_id_conflict');
+        }
+        throw new Error(msg);
+      }
+      return null;
 
     case 'renameRoute':
       requireParam(body.routeId, 'routeId');
