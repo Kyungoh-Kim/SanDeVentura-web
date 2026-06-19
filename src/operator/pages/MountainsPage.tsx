@@ -4,11 +4,12 @@ import { getPageCount, getPageItems, Pagination } from '../components/Pagination
 import { type Mountain, type OperatorRouteCoverage, type OperatorRouteDetail } from '../data/readModels';
 import {
   fetchMountains,
-  formatBbox,
   parseBbox,
-  updateMountainBbox,
   createMountain,
+  updateMountain,
 } from '../data/mountainsRepository';
+import CreateMountainModal from '../components/CreateMountainModal';
+import EditMountainModal from '../components/EditMountainModal';
 import { fetchMountainRouteDetails, fetchRouteCoverage } from '../data/routesRepository';
 
 const OperatorRouteMap = lazy(() =>
@@ -28,12 +29,15 @@ export function MountainsPage() {
   const [coverage, setCoverage] = useState<OperatorRouteCoverage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
-  const [edit, setEdit] = useState<EditState | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewRoutes, setPreviewRoutes] = useState<OperatorRouteDetail[]>([]);
   const [page, setPage] = useState(1);
   const [showCreateModal, setShowCreateModal] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingInitialName, setEditingInitialName] = useState('');
+  const [editingInitialBbox, setEditingInitialBbox] = useState<string | null>(null);
+  const [editingSaving, setEditingSaving] = useState(false);
 
   const loadMountains = useCallback(() => {
     Promise.all([fetchMountains(), fetchRouteCoverage()])
@@ -88,53 +92,6 @@ export function MountainsPage() {
     });
     return () => { cancelled = true; };
   }, [previewId]);
-
-  function startEdit(mountain: Mountain) {
-    const bbox = parseBbox(mountain.bbox);
-    setEdit({
-      mountainId: mountain.id,
-      minLon: bbox ? String(bbox[0]) : '',
-      minLat: bbox ? String(bbox[1]) : '',
-      maxLon: bbox ? String(bbox[2]) : '',
-      maxLat: bbox ? String(bbox[3]) : '',
-    });
-    // focus preview to this mountain so the map can be used as a drawing target
-    setPreviewId(mountain.id);
-  }
-
-  function cancelEdit() {
-    setEdit(null);
-  }
-
-  async function saveEdit() {
-    if (!edit) return;
-    const { mountainId, minLon, minLat, maxLon, maxLat } = edit;
-    const allFilled = [minLon, minLat, maxLon, maxLat].every((v) => v.trim() !== '');
-    const newBbox = allFilled
-      ? formatBbox([
-          Number(minLon),
-          Number(minLat),
-          Number(maxLon),
-          Number(maxLat),
-        ])
-      : null;
-
-    if (allFilled && parseBbox(newBbox) === null) {
-      setError('Invalid bbox: check that min < max values.');
-      return;
-    }
-
-    setSaving(mountainId);
-    try {
-      await updateMountainBbox(mountainId, newBbox);
-      setEdit(null);
-      loadMountains();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(null);
-    }
-  }
 
   const previewMountain = mountains.find((m) => m.id === previewId) ?? null;
   const previewBbox = parseBbox(previewMountain?.bbox ?? null);
@@ -242,8 +199,8 @@ export function MountainsPage() {
                   </td>
                 </tr>
               )}
-              {pageMountains.map((mountain) => {
-                const isEditing = edit?.mountainId === mountain.id;
+                {pageMountains.map((mountain) => {
+                 const isEditing = false;
                 const isSaving = saving === mountain.id;
                 const isSelected = previewId === mountain.id;
                 return (
@@ -293,35 +250,24 @@ export function MountainsPage() {
                         return <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{formatRelativeDate(s.latestUpdatedAt)}</span>;
                       })()}
                     </td>
-                    <td onClick={isEditing ? (e) => e.stopPropagation() : undefined}>
-                      {isEditing ? (
-                        <BboxInputs
-                          edit={edit!}
-                          onChange={(field, val) =>
-                            setEdit((prev) => prev ? { ...prev, [field]: val } : prev)
-                          }
-                        />
-                      ) : (
-                        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
-                          {mountain.bbox ?? <span style={{ color: 'var(--text-3)' }}>-</span>}
-                        </span>
-                      )}
+                    <td>
+                      <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
+                        {mountain.bbox ?? <span style={{ color: 'var(--text-3)' }}>-</span>}
+                      </span>
                     </td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      {isEditing ? (
-                        <div style={{ display: 'flex', gap: 6 }}>
-                          <button className="btn btn-primary" type="button" disabled={isSaving} onClick={saveEdit}>
-                            {isSaving ? 'Saving...' : 'Save'}
-                          </button>
-                          <button className="btn btn-ghost" type="button" onClick={cancelEdit}>
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <button className="btn btn-ghost" type="button" onClick={() => startEdit(mountain)}>
-                          Edit bbox
-                        </button>
-                      )}
+                    <td style={{ width: 1 }}>
+                      <button
+                        className="btn btn-ghost"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingId(mountain.id);
+                          setEditingInitialName(mountain.displayName);
+                          setEditingInitialBbox(mountain.bbox ?? null);
+                        }}
+                      >
+                        Edit
+                      </button>
                     </td>
                   </tr>
                 );
@@ -355,18 +301,7 @@ export function MountainsPage() {
                     routeState: r.routeState,
                   }))}
                   title={previewMountain.displayName}
-                  // If we're editing this mountain, enable the small bbox editor.
-                  enableBBoxEditor={edit?.mountainId === previewMountain.id}
-                  onBBoxChange={(newBbox) => {
-                    if (!newBbox) return;
-                    setEdit((prev) => prev ? ({
-                      ...prev,
-                      minLon: String(newBbox[0]),
-                      minLat: String(newBbox[1]),
-                      maxLon: String(newBbox[2]),
-                      maxLat: String(newBbox[3]),
-                    }) : prev);
-                  }}
+                  // inline map editing removed — preview-only map
                 />
               </Suspense>
             ) : (
@@ -379,82 +314,31 @@ export function MountainsPage() {
         </div>
       </div>
 
+      {editingId && (
+        <EditMountainModal
+          id={editingId}
+          initialDisplayName={editingInitialName}
+          initialBbox={editingInitialBbox}
+          onCancel={() => setEditingId(null)}
+          saving={editingSaving}
+          onConfirm={async (displayName, bbox) => {
+            setEditingSaving(true);
+            try {
+              // call repository helper to update mountain
+              await updateMountain(editingId, displayName, bbox ?? null);
+              setEditingId(null);
+              loadMountains();
+              setPreviewId(editingId);
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            } finally {
+              setEditingSaving(false);
+            }
+          }}
+        />
+      )}
+
     </>
-  );
-}
-
-function CreateMountainModal({
-  value,
-  onChange,
-  onConfirm,
-  onCancel,
-  creating,
-}: {
-  value: string | null;
-  onChange: (v: string) => void;
-  onConfirm: (id: string, displayName: string, bbox: string | null) => Promise<void>;
-  onCancel: () => void;
-  creating: boolean;
-}) {
-  const id = value ?? '';
-  const [displayName, setDisplayName] = useState('');
-  const [bbox, setBbox] = useState('');
-
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter' && id.trim() !== '' && displayName.trim() !== '') onConfirm(id.trim(), displayName.trim(), bbox.trim() === '' ? null : bbox.trim());
-    if (e.key === 'Escape') onCancel();
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="modal-title">Add mountain</h3>
-        <p className="modal-body">Create a new mountain identifier and display name.</p>
-        <label className="modal-label">
-          Mountain ID
-          <input className="modal-input" type="text" value={id} onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown} maxLength={80} />
-        </label>
-        <label className="modal-label">
-          Display name
-          <input className="modal-input" type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} onKeyDown={onKeyDown} maxLength={120} />
-        </label>
-        <label className="modal-label">
-          BBox (minLon,minLat,maxLon,maxLat) — optional
-          <input className="modal-input" type="text" value={bbox} onChange={(e) => setBbox(e.target.value)} onKeyDown={onKeyDown} />
-        </label>
-
-        <div style={{ marginTop: 8 }}>
-          <small style={{ color: 'var(--text-3)' }}>Or draw bbox on map by clicking two points.</small>
-          <div style={{ height: 240, marginTop: 8 }}>
-            <Suspense fallback={<div className="route-map-empty"><strong>Loading map</strong><span>Preparing map preview.</span></div>}>
-              <OperatorRouteMap
-                geometry={null}
-                routeState="none"
-                bbox={parseBbox(bbox.trim() === '' ? null : bbox.trim())}
-                allowExpand={false}
-                enableBBoxEditor
-                onBBoxChange={(newBbox) => {
-                  if (!newBbox) return;
-                  // formatBbox is imported in this module
-                  const formatted = formatBbox(newBbox);
-                  setBbox(formatted);
-                }}
-              />
-            </Suspense>
-          </div>
-        </div>
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-          <button
-            className="btn btn-primary"
-            onClick={() => onConfirm(id.trim(), displayName.trim(), bbox.trim() === '' ? null : bbox.trim())}
-            disabled={id.trim() === '' || displayName.trim() === '' || creating}
-          >
-            {creating ? 'Creating...' : 'Create'}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
